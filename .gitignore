@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments (uv)
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+uv.lock
+.uv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Artifacts and outputs
+artifacts/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.txt
+execution_log.json
+
+# Model cache
+.cache/
+models/
+*.bin
+*.safetensors
+
+# Playwright
+.playwright/
+playwright-report/
+test-results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Environment variables
+.env

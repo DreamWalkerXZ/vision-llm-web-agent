@@ -1,0 +1,33 @@
+"""
+Configuration package for Vision LLM Web Agent
+"""
+
+from .settings import (
+    PROJECT_ROOT,
+    ARTIFACTS_DIR,
+    LOGS_DIR,
+    OPENAI_API_KEY,
+    OPENAI_BASE_URL,
+    OPENAI_MODEL,
+    MAX_ROUNDS,
+    TIMEOUT_PER_ROUND,
+    BROWSER_HEADLESS,
+    BROWSER_VIEWPORT_WIDTH,
+    BROWSER_VIEWPORT_HEIGHT,
+    BROWSER_LOCALE
+)
+
+__all__ = [
+    "PROJECT_ROOT",
+    "ARTIFACTS_DIR", 
+    "LOGS_DIR",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_MODEL",
+    "MAX_ROUNDS",
+    "TIMEOUT_PER_ROUND",
+    "BROWSER_HEADLESS",
+    "BROWSER_VIEWPORT_WIDTH",
+    "BROWSER_VIEWPORT_HEIGHT",
+    "BROWSER_LOCALE"
+]
