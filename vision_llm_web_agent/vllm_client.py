@@ -231,6 +231,8 @@ When task is complete:
         for msg in history:
             if msg['role'] in ['user', 'assistant']:
                 messages.append(msg)
+        print("===At vllm client===", f"\n📝 History Messages Count: {len(history)}")
+        print(messages)
         
         # Add current state with vision input (if screenshot available)
         current_state_content = []
@@ -256,6 +258,8 @@ When task is complete:
         # Add text description in JSON format
         dom_text = state_info.get('dom', 'N/A')
         round_num = state_info.get('round', 0)
+        print("===At vllm client===", f"\n📝 DOM Summary:")
+        print(dom_text)
         
         current_state_json = {
             "round": round_num,
