@@ -61,6 +61,7 @@ class Agent:
         self.history: List[Dict[str, Any]] = []
         self.execution_log: List[Dict[str, Any]] = []
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.next_step = ""
         
         # Create artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -213,7 +214,10 @@ class Agent:
             registry = self.get_tool_registry()
             dom_func = registry.get_tool("dom_summary")
             if dom_func:
-                dom_analysis = dom_func(self.vllm.client, self.history[0]['content'], max_elements=5)  # Increased to capture more elements
+                next_step = self.next_step if self.next_step else self.history[0]['content']
+                dom_analysis = dom_func(self.vllm.client, next_step, self.vllm.language_model, max_elements=5)  # Increased to capture more elements
+                if (isinstance(dom_analysis, str)):
+                    print(dom_analysis)
                 dom = dom_analysis.get("llm_text")
                 print(f"   ✅ DOM extracted ({len(dom_analysis)} chars)")
                 
@@ -261,7 +265,12 @@ class Agent:
         # Log thought
         if response.get("thought"):
             print(f"💭 Thought: {response['thought']}")
-        
+            
+        if response.get("next"):
+            self.next_step = response["next"]
+            print(f"➡️  Next step set for DOM analysis: {self.next_step}")
+        else:
+            self.next_step = ""
         # 3. Check if task is complete
         if response.get("is_complete"):
             final_answer = response.get("final_answer", "Task completed")
@@ -331,7 +340,8 @@ class Agent:
             assistant_tool_call = {
                 "thought": response.get("thought", ""),
                 "tool": tool_name,
-                "parameters": parameters
+                "parameters": parameters,
+                "next": self.next_step
             }
             self.history.append({
                 "role": "assistant",

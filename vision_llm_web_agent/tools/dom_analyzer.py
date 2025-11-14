@@ -172,9 +172,10 @@ class SemanticDOMAnalyzer:
             all_elements[el['tag']].append(el)
         
         filtered_elements = []
-        system_prompt = f"你是一个html元素筛选器，为下游的web agent筛选有用的html元素，比如搜索框元素，点击后搜索播放等交互元素。用户将输入一个问题，以及一系列结构化的元素。请根据问题，筛选出与问题最相关的'max = {max_elements}'元素，并返回这些元素的编号列表。你只需要返回编号列表，格式为：```json [1,3,5]```，不要返回其他内容。"
+        system_prompt = f"你是一个html元素筛选器，为下游的web agent筛选有用的html元素，比如搜索框元素，点击后搜索播放等交互元素。注意，一些带有nav/search性质的div元素也需要保留。用户将输入一个问题，以及一系列结构化的元素。请根据问题，筛选出与问题最相关的'max = {max_elements}'元素，并返回这些元素的编号列表。你只需要返回编号列表，格式为：```json [1,3,5]```，不要返回其他内容。"
         for tag in input_elements:
             if(len(input_elements[tag])<=max_elements):
+                print(f"✅ 选择了元素 [{tag}] 数量 {len(input_elements[tag])}")
                 filtered_elements.extend(all_elements[tag])
                 continue
             input_prompt = "\n".join(input_elements[tag])
@@ -185,7 +186,7 @@ class SemanticDOMAnalyzer:
             response = client.chat.completions.create(
                 model=model,
                 messages=message,
-                temperature=0.2,
+                temperature=0.7,
                 max_tokens=200,
             )
             # 使用re 解析编号列表```json [1,3,5]```
@@ -208,17 +209,15 @@ class SemanticDOMAnalyzer:
     def to_llm_representation(self, elements, max_elements=5):
         """转为 LLM 可读文本（同时保留位置信息）"""
         lines = []
-        elements_count = {}
+        elements_count = {el['tag']: 0 for el in elements}
         count = 0
         filtered_elements = []  # 保存被选中的元素（包含位置信息）
         
-        for i, el in enumerate(elements, 1):
-            if el['semantic']['type'] not in elements_count:
-                elements_count[el['semantic']['type']] = 0
-            if elements_count[el['semantic']['type']] >= max_elements:
+        for i, el in enumerate(elements):
+            if elements_count[el['tag']] >= max_elements:
                 continue
             count += 1
-            elements_count[el['semantic']['type']] += 1
+            elements_count[el['tag']] += 1
             
             # 添加到过滤后的元素列表
             filtered_elements.append({
@@ -228,19 +227,31 @@ class SemanticDOMAnalyzer:
             text = el['text'].strip() if el['text'] else "<no text>"
             
             desc = f"[{count}] <{el['tag']}> ({el['semantic']['type']}) {text}"
-            if el['attributes'].get("class"):
-                if any(c in el['attributes']['class'] for c in ['nav', 'input', 'btn', 'menu', 'link', 'button']):
-                    desc += f" [class: {el['attributes']['class']}]"
-            hint = f" → {el['semantic']['hint']}"
-            tool_call = f"tool_call: click {{text:  '{text}'}}"
-            lines.append(desc + hint + tool_call)
+            selector = ''
+            if el['attributes'].get('id'):
+                selector = f"#{el['attributes']['id']}"
+            elif el['attributes'].get('name'):
+                selector = f"[name='{el['attributes']['name']}']"
+            elif el['attributes'].get('class') and el['attributes']['class'].split():
+                class_name = el['attributes']['class'].strip()
+                selector = "." + ".".join(class_name.split())
+            else:
+                selector = el['tag']
+                
+            # hint = f" → {el['semantic']['hint']}"
+            if el['tag'] in ['textarea', 'input', 'textbox']:
+                tool_call = f" tool_call: type_text {{selector: '{selector}, text: '<text_to_type>'}}"
+            else:
+                tool_call = f" tool_call: click {{selector:  '{selector}'}}"
+                
+            lines.append(desc + tool_call)
         
         return "\n".join(lines), filtered_elements
 
-    def analyze_page(self, page, client, user_prompt, usermodel='qwen-flash', max_elements=20):
+    def analyze_page(self, page, client, user_prompt, model='qwen-flash', max_elements=20):
         """主入口：分析已有 page 对象"""
         elements = self.extract_dom_from_page(page)
-        original_filtered_elements = self.filter_interactive_elements(client, elements, user_prompt=user_prompt, model=usermodel, max_elements=max_elements)
+        original_filtered_elements = self.filter_interactive_elements(client, elements, user_prompt=user_prompt, model=model, max_elements=max_elements)
         text_repr, filtered_elements = self.to_llm_representation(original_filtered_elements, max_elements=max_elements)
         return {
             "elements": elements,

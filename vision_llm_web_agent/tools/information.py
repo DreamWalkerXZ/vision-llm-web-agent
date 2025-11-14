@@ -43,13 +43,13 @@ def take_screenshot(file_name: str = "screenshot.png") -> str:
     parameters={"max_elements": "int (optional, default: 50)"},
     category="information"
 )
-def get_dom_summary(client, user_prompt, max_elements: int = 50) -> str:
+def get_dom_summary(client, user_prompt, model, max_elements: int = 50) -> str:
     """Get a simplified DOM structure focusing on clickable and interactive elements"""
     if not browser_state.is_initialized:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        return semantic_dom_analyzer.analyze_page(browser_state.get_current_page(), client, user_prompt=user_prompt, max_elements=max_elements)
+        return semantic_dom_analyzer.analyze_page(browser_state.get_current_page(), client, user_prompt=user_prompt, model=model, max_elements=max_elements)
     
     except Exception as e:
         return f"❌ Failed to get DOM summary: {str(e)}"
@@ -67,7 +67,8 @@ def get_page_text_content() -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        content = browser_state.page.evaluate("() => document.body.innerText")
+        page = browser_state.get_current_page()
+        content = page.evaluate("() => document.body.innerText")
         return content[:10000]
     except Exception as e:
         return f"❌ Failed to get page content: {str(e)}"

@@ -27,6 +27,7 @@ class VLLMClient:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        language_model: Optional[str] = None,
         max_tokens: int = 2000,
         temperature: float = 0.7
     ):
@@ -48,6 +49,7 @@ class VLLMClient:
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "EMPTY")
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.language_model = language_model or os.getenv("OPENAI_MODEL", "gpt-4o")
         self.max_tokens = max_tokens
         self.temperature = temperature
         
@@ -174,7 +176,8 @@ To use a tool:
 {
     "thought": "What I'm doing and why",
     "tool": "tool_name",
-    "parameters": {"param": "value"}
+    "parameters": {"param": "value"},
+    "next": "If task is not fully complete, what to do next"
 }
 ```
 
@@ -231,8 +234,6 @@ When task is complete:
         for msg in history:
             if msg['role'] in ['user', 'assistant']:
                 messages.append(msg)
-        print("===At vllm client===", f"\n📝 History Messages Count: {len(history)}")
-        print(messages)
         
         # Add current state with vision input (if screenshot available)
         current_state_content = []
@@ -488,6 +489,7 @@ When task is complete:
                         "params": parsed.get("parameters", {})
                     }],
                     "thought": parsed.get("thought", ""),
+                    "next": parsed.get("next", ""),
                     "raw_response": content
                 }
             

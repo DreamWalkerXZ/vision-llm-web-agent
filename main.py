@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from vision_llm_web_agent.agent_controller import Agent
 from vision_llm_web_agent.vllm_client import VLLMClient
 from vision_llm_web_agent.config import (
-    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
+    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_LANGUAGE_MODEL,
     MAX_ROUNDS, TIMEOUT_PER_ROUND, ARTIFACTS_DIR
 )
 
@@ -42,7 +42,8 @@ def main():
     vllm = VLLMClient(
         base_url=OPENAI_BASE_URL,
         api_key=OPENAI_API_KEY,
-        model=OPENAI_MODEL
+        model=OPENAI_MODEL,
+        language_model=OPENAI_LANGUAGE_MODEL,
     )
     
     # Test connection (optional)
