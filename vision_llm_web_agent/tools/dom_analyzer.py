@@ -251,8 +251,12 @@ class SemanticDOMAnalyzer:
     def analyze_page(self, page, client, user_prompt, model='qwen-flash', max_elements=20):
         """主入口：分析已有 page 对象"""
         elements = self.extract_dom_from_page(page)
-        original_filtered_elements = self.filter_interactive_elements(client, elements, user_prompt=user_prompt, model=model, max_elements=max_elements)
-        text_repr, filtered_elements = self.to_llm_representation(original_filtered_elements, max_elements=max_elements)
+        if model is None or model == '':
+            filtered_elements = elements
+        else:
+            filtered_elements = self.filter_interactive_elements(client, elements, user_prompt=user_prompt, model=model, max_elements=max_elements)
+            
+        text_repr, filtered_elements = self.to_llm_representation(filtered_elements, max_elements=max_elements)
         return {
             "elements": elements,
             "llm_text": text_repr,
