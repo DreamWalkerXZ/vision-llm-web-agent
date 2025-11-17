@@ -38,6 +38,13 @@ cp example.env .env
 uv run python main.py
 ```
 
+### Testing
+
+```bash
+# Test web agent completion rate
+$env:RUN_AGENT_EVAL=1; uv run pytest tests/test_agent_completion_rate.py -k completion_rate -s
+```
+
 ## 📦 Project Structure
 
 ```text

@@ -27,6 +27,7 @@ class VLLMClient:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        language_model: Optional[str] = None,
         max_tokens: int = 2000,
         temperature: float = 0.7
     ):
@@ -48,6 +49,7 @@ class VLLMClient:
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "EMPTY")
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.language_model = language_model or os.getenv("OPENAI_MODEL", "gpt-4o")
         self.max_tokens = max_tokens
         self.temperature = temperature
         
@@ -174,7 +176,8 @@ To use a tool:
 {
     "thought": "What I'm doing and why",
     "tool": "tool_name",
-    "parameters": {"param": "value"}
+    "parameters": {"param": "value"},
+    "next": "If task is not fully complete, what to do next"
 }
 ```
 
@@ -256,6 +259,8 @@ When task is complete:
         # Add text description in JSON format
         dom_text = state_info.get('dom', 'N/A')
         round_num = state_info.get('round', 0)
+        print("===At vllm client===", f"\n📝 DOM Summary:")
+        print(dom_text)
         
         current_state_json = {
             "round": round_num,
@@ -484,6 +489,7 @@ When task is complete:
                         "params": parsed.get("parameters", {})
                     }],
                     "thought": parsed.get("thought", ""),
+                    "next": parsed.get("next", ""),
                     "raw_response": content
                 }
             
