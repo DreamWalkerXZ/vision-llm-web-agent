@@ -60,6 +60,8 @@ class Agent:
         self.history: List[Dict[str, Any]] = []
         self.execution_log: List[Dict[str, Any]] = []
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_active = False
+        self.round_counter = 0
         
         # Create artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +71,41 @@ class Agent:
         print(f"   Max rounds: {max_rounds}")
         print(f"   Timeout per round: {timeout_per_round}s")
         print(f"   Artifacts dir: {artifacts_dir}")
+    
+    def _start_new_session(self, instruction: str):
+        """Initialize a new agent session with the first instruction."""
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.history = [{
+            "role": "user",
+            "content": instruction
+        }]
+        self.execution_log = []
+        self.round_counter = 0
+        self.session_active = True
+        
+        self._log_instruction(instruction, is_new_session=True)
+    
+    def _log_instruction(self, instruction: str, is_new_session: bool = False):
+        """Record the user instruction in the execution log."""
+        entry = {
+            "round": self.round_counter,
+            "action": "instruction",
+            "instruction": instruction,
+            "is_new_session": is_new_session,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.execution_log.append(entry)
+        self.save_execution_log()
+    
+    def end_session(self):
+        """Manually end the current session and clean up browser resources."""
+        registry = self.get_tool_registry()
+        close_browser_func = registry.get_tool("close_browser")
+        if close_browser_func:
+            close_browser_func()
+        self.session_active = False
+        self.round_counter = 0
+        print("👋 Session ended and browser closed.")
     
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         """
@@ -95,63 +132,87 @@ class Agent:
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
     
-    def execute(self, instruction: str) -> str:
+    def execute(
+        self,
+        instruction: str,
+        continue_session: bool = False,
+        close_browser: Optional[bool] = None
+    ) -> str:
         """
         Execute a user instruction through multi-round interaction.
         
         Args:
             instruction: Natural language instruction from user
+            continue_session: Whether to continue from an existing session
+            close_browser: Whether to close the browser after execution. Defaults
+                to False for continued sessions and True otherwise.
         
         Returns:
             Final answer or error message
         """
+        if close_browser is None:
+            close_browser = not continue_session
+        
+        if continue_session and not self.session_active:
+            print("⚠️  No active session found. Starting a new session instead.")
+            continue_session = False
+        
         print(f"\n{'='*80}")
-        print(f"🎯 Task: {instruction}")
+        if continue_session:
+            print(f"🔁 Follow-up Task: {instruction}")
+        else:
+            print(f"🎯 Task: {instruction}")
         print(f"{'='*80}\n")
         
-        # Initialize history with user instruction
-        self.history = [{
-            "role": "user",
-            "content": instruction
-        }]
+        if continue_session:
+            self.history.append({
+                "role": "user",
+                "content": instruction
+            })
+            self._log_instruction(instruction, is_new_session=False)
+        else:
+            if self.session_active and close_browser:
+                print("ℹ️  Ending previous session and starting a new one.")
+            self._start_new_session(instruction)
         
         start_time = time.time()
         
-        # Open browser to DuckDuckGo before first round
-        print("🌐 Opening browser to https://duckduckgo.com/...")
-        try:
-            registry = self.get_tool_registry()
-            goto_func = registry.get_tool("goto")
-            if goto_func:
-                result = goto_func("https://duckduckgo.com/")
-                print(f"   {result}")
-            else:
-                print("   ⚠️  goto tool not available")
-        except Exception as e:
-            print(f"   ⚠️  Failed to open browser: {e}")
+        if not continue_session:
+            # Open browser to DuckDuckGo before first round
+            # User-Agent is set in browser initialization to avoid detection
+            print("🌐 Opening browser to DuckDuckGo...")
+            try:
+                registry = self.get_tool_registry()
+                goto_func = registry.get_tool("goto")
+                if goto_func:
+                    result = goto_func("https://duckduckgo.com/")
+                    print(f"   {result}")
+                else:
+                    print("   ⚠️  goto tool not available")
+            except Exception as e:
+                print(f"   ⚠️  Failed to open browser: {e}")
+        else:
+            print("🌐 Continuing with existing browser session...")
         
-        final_result = None
-        final_status = None
-        
         try:
-            for round_num in range(self.max_rounds):
+            for _ in range(self.max_rounds):
+                current_round = self.round_counter
                 print(f"\n{'─'*80}")
-                print(f"🔄 Round {round_num + 1}/{self.max_rounds}")
+                print(f"🔄 Round {current_round + 1}/{self.max_rounds}")
                 print(f"{'─'*80}")
                 
                 # Execute one round
-                result = self.execute_round(round_num)
+                result = self.execute_round(current_round)
+                self.round_counter += 1
                 
                 if result["is_complete"]:
                     elapsed = time.time() - start_time
                     print(f"\n{'='*80}")
-                    print(f"✅ Task completed in {elapsed:.1f}s ({round_num + 1} rounds)")
+                    print(f"✅ Task completed in {elapsed:.1f}s ({current_round + 1} rounds total)")
                     print(f"{'='*80}")
                     print(f"\n{result['final_answer']}")
                     
-                    final_result = result["final_answer"]
-                    final_status = "completed"
-                    break
+                    return result["final_answer"]
                 
                 # Check for errors
                 if result.get("error"):
@@ -159,34 +220,28 @@ class Agent:
                     # Continue to next round to let VLLM recover
             
             # Max rounds reached
-            if final_result is None:
-                print(f"\n{'='*80}")
-                print(f"⚠️  Max rounds ({self.max_rounds}) reached")
-                print(f"{'='*80}")
-                
-                final_result = f"Task incomplete after {self.max_rounds} rounds. Last state saved to artifacts."
-                final_status = "incomplete"
+            print(f"\n{'='*80}")
+            print(f"⚠️  Max rounds ({self.max_rounds}) reached")
+            print(f"{'='*80}")
+            
+            return f"Task incomplete after {self.max_rounds} rounds. Last state saved to artifacts."
         
         except Exception as e:
             print(f"\n❌ Fatal error: {e}")
             import traceback
             traceback.print_exc()
             
-            final_result = f"Fatal error: {str(e)}"
-            final_status = "error"
+            return f"Fatal error: {str(e)}"
         
         finally:
-            # Generate and save final interpretation before cleanup
-            if final_result is not None:
-                self.generate_final_interpretation(instruction, final_result, final_status or "unknown")
-            
             # Clean up browser
-            registry = self.get_tool_registry()
-            close_browser_func = registry.get_tool("close_browser")
-            if close_browser_func:
-                close_browser_func()
-        
-        return final_result or "Task execution ended unexpectedly."
+            if close_browser:
+                registry = self.get_tool_registry()
+                close_browser_func = registry.get_tool("close_browser")
+                if close_browser_func:
+                    close_browser_func()
+                self.session_active = False
+                self.round_counter = 0
     
     def execute_round(self, round_num: int) -> Dict[str, Any]:
         """
@@ -202,7 +257,8 @@ class Agent:
         
         # 1. Get current state (screenshot + DOM)
         print("📸 Capturing current state...")
-        screenshot_path = str(self.artifacts_dir / f"step_{round_num:02d}.png")
+        screenshot_filename = f"{self.session_id}_step_{round_num:03d}.png"
+        screenshot_path = str(self.artifacts_dir / screenshot_filename)
         screenshot_available = False
         
         try:
@@ -379,135 +435,13 @@ class Agent:
             "timestamp": datetime.now().isoformat(),
             "history": self.history,
             "execution_log": self.execution_log,
-            "total_rounds": len(self.execution_log)
+            "total_rounds": self.round_counter
         }
         
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(log_data, f, indent=2, ensure_ascii=False)
         
         print(f"📝 Execution log updated: {log_path}")
-    
-    def generate_final_interpretation(self, instruction: str, final_result: str, status: str) -> str:
-        """
-        Generate final interpretation using LLM and save to file.
-        
-        Args:
-            instruction: Original user instruction
-            final_result: Final result message
-            status: Status of task completion ("completed", "failed", "incomplete", "error")
-        
-        Returns:
-            Path to saved interpretation file
-        """
-        try:
-            print("\n📝 Generating final interpretation...")
-            
-            # Prepare tool execution history for prompt context
-            tool_history_entries = [
-                {
-                    "round": entry.get("round"),
-                    "tool": entry.get("tool"),
-                    "parameters": entry.get("parameters"),
-                    "result": entry.get("result")
-                }
-                for entry in self.execution_log
-                if entry.get("tool")
-            ]
-            
-            max_history_entries = 25
-            total_tool_entries = len(tool_history_entries)
-            if total_tool_entries > max_history_entries:
-                tool_history_note = f"(showing latest {max_history_entries} of {total_tool_entries} tool executions)"
-                tool_history_entries = tool_history_entries[-max_history_entries:]
-            else:
-                tool_history_note = "(showing all tool executions)"
-            
-            tool_history_json = json.dumps(tool_history_entries, ensure_ascii=False, indent=2) if tool_history_entries else "[]"
-            
-            # Build prompt for final interpretation
-            interpretation_prompt = f"""You are analyzing the execution of a web automation task. Please provide a comprehensive final interpretation of what happened.
-
-**Original Task:**
-{instruction}
-
-**Final Status:**
-{status}
-
-**Final Result:**
-{final_result}
-
-**Execution Summary:**
-- Total rounds executed: {len(self.execution_log)}
-- Session ID: {self.session_id}
-
-**Tool Execution History {tool_history_note}:**
-```json
-{tool_history_json}
-```
-
-Please provide a detailed interpretation that includes:
-1. What the task was trying to accomplish
-2. What actions were taken during execution
-3. Whether the task was completed successfully or not, and why
-4. Key findings or results
-5. Any issues or limitations encountered
-6. Overall assessment of the execution
-
-Write in a clear, structured format suitable for documentation."""
-
-            # Call VLLM to generate interpretation
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant that provides clear, structured interpretations of task execution results."},
-                {"role": "user", "content": interpretation_prompt}
-            ]
-            
-            try:
-                response = self.vllm.client.chat.completions.create(
-                    model=self.vllm.model,
-                    messages=messages,
-                    max_tokens=self.vllm.max_tokens,
-                    temperature=0.7
-                )
-                
-                interpretation = response.choices[0].message.content
-                
-                # Save to file using write_text_to_file tool
-                file_name = f"final_interpretation_{self.session_id}.txt"
-                result = self.execute_tool("write_text", {
-                    "content": interpretation,
-                    "file_name": file_name
-                })
-                
-                print(f"   ✅ {result}")
-                return file_name
-                
-            except Exception as e:
-                print(f"   ⚠️  Failed to generate interpretation: {e}")
-                # Fallback: save a simple interpretation
-                fallback_content = f"""Final Interpretation
-{'='*80}
-
-Task: {instruction}
-Status: {status}
-Result: {final_result}
-
-Execution Summary:
-- Total rounds: {len(self.execution_log)}
-- Session ID: {self.session_id}
-
-Note: Automatic interpretation generation failed. This is a fallback summary.
-"""
-                file_name = f"final_interpretation_{self.session_id}.txt"
-                result = self.execute_tool("write_text", {
-                    "content": fallback_content,
-                    "file_name": file_name
-                })
-                print(f"   ✅ Saved fallback interpretation: {result}")
-                return file_name
-                
-        except Exception as e:
-            print(f"   ⚠️  Error generating final interpretation: {e}")
-            return ""
 
 
 if __name__ == "__main__":
