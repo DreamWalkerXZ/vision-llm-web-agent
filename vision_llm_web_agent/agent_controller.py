@@ -130,6 +130,9 @@ class Agent:
         except Exception as e:
             print(f"   ⚠️  Failed to open browser: {e}")
         
+        final_result = None
+        final_status = None
+        
         try:
             for round_num in range(self.max_rounds):
                 print(f"\n{'─'*80}")
@@ -146,7 +149,9 @@ class Agent:
                     print(f"{'='*80}")
                     print(f"\n{result['final_answer']}")
                     
-                    return result["final_answer"]
+                    final_result = result["final_answer"]
+                    final_status = "completed"
+                    break
                 
                 # Check for errors
                 if result.get("error"):
@@ -154,25 +159,34 @@ class Agent:
                     # Continue to next round to let VLLM recover
             
             # Max rounds reached
-            print(f"\n{'='*80}")
-            print(f"⚠️  Max rounds ({self.max_rounds}) reached")
-            print(f"{'='*80}")
-            
-            return f"Task incomplete after {self.max_rounds} rounds. Last state saved to artifacts."
+            if final_result is None:
+                print(f"\n{'='*80}")
+                print(f"⚠️  Max rounds ({self.max_rounds}) reached")
+                print(f"{'='*80}")
+                
+                final_result = f"Task incomplete after {self.max_rounds} rounds. Last state saved to artifacts."
+                final_status = "incomplete"
         
         except Exception as e:
             print(f"\n❌ Fatal error: {e}")
             import traceback
             traceback.print_exc()
             
-            return f"Fatal error: {str(e)}"
+            final_result = f"Fatal error: {str(e)}"
+            final_status = "error"
         
         finally:
+            # Generate and save final interpretation before cleanup
+            if final_result is not None:
+                self.generate_final_interpretation(instruction, final_result, final_status or "unknown")
+            
             # Clean up browser
             registry = self.get_tool_registry()
             close_browser_func = registry.get_tool("close_browser")
             if close_browser_func:
                 close_browser_func()
+        
+        return final_result or "Task execution ended unexpectedly."
     
     def execute_round(self, round_num: int) -> Dict[str, Any]:
         """
@@ -372,6 +386,128 @@ class Agent:
             json.dump(log_data, f, indent=2, ensure_ascii=False)
         
         print(f"📝 Execution log updated: {log_path}")
+    
+    def generate_final_interpretation(self, instruction: str, final_result: str, status: str) -> str:
+        """
+        Generate final interpretation using LLM and save to file.
+        
+        Args:
+            instruction: Original user instruction
+            final_result: Final result message
+            status: Status of task completion ("completed", "failed", "incomplete", "error")
+        
+        Returns:
+            Path to saved interpretation file
+        """
+        try:
+            print("\n📝 Generating final interpretation...")
+            
+            # Prepare tool execution history for prompt context
+            tool_history_entries = [
+                {
+                    "round": entry.get("round"),
+                    "tool": entry.get("tool"),
+                    "parameters": entry.get("parameters"),
+                    "result": entry.get("result")
+                }
+                for entry in self.execution_log
+                if entry.get("tool")
+            ]
+            
+            max_history_entries = 25
+            total_tool_entries = len(tool_history_entries)
+            if total_tool_entries > max_history_entries:
+                tool_history_note = f"(showing latest {max_history_entries} of {total_tool_entries} tool executions)"
+                tool_history_entries = tool_history_entries[-max_history_entries:]
+            else:
+                tool_history_note = "(showing all tool executions)"
+            
+            tool_history_json = json.dumps(tool_history_entries, ensure_ascii=False, indent=2) if tool_history_entries else "[]"
+            
+            # Build prompt for final interpretation
+            interpretation_prompt = f"""You are analyzing the execution of a web automation task. Please provide a comprehensive final interpretation of what happened.
+
+**Original Task:**
+{instruction}
+
+**Final Status:**
+{status}
+
+**Final Result:**
+{final_result}
+
+**Execution Summary:**
+- Total rounds executed: {len(self.execution_log)}
+- Session ID: {self.session_id}
+
+**Tool Execution History {tool_history_note}:**
+```json
+{tool_history_json}
+```
+
+Please provide a detailed interpretation that includes:
+1. What the task was trying to accomplish
+2. What actions were taken during execution
+3. Whether the task was completed successfully or not, and why
+4. Key findings or results
+5. Any issues or limitations encountered
+6. Overall assessment of the execution
+
+Write in a clear, structured format suitable for documentation."""
+
+            # Call VLLM to generate interpretation
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that provides clear, structured interpretations of task execution results."},
+                {"role": "user", "content": interpretation_prompt}
+            ]
+            
+            try:
+                response = self.vllm.client.chat.completions.create(
+                    model=self.vllm.model,
+                    messages=messages,
+                    max_tokens=self.vllm.max_tokens,
+                    temperature=0.7
+                )
+                
+                interpretation = response.choices[0].message.content
+                
+                # Save to file using write_text_to_file tool
+                file_name = f"final_interpretation_{self.session_id}.txt"
+                result = self.execute_tool("write_text", {
+                    "content": interpretation,
+                    "file_name": file_name
+                })
+                
+                print(f"   ✅ {result}")
+                return file_name
+                
+            except Exception as e:
+                print(f"   ⚠️  Failed to generate interpretation: {e}")
+                # Fallback: save a simple interpretation
+                fallback_content = f"""Final Interpretation
+{'='*80}
+
+Task: {instruction}
+Status: {status}
+Result: {final_result}
+
+Execution Summary:
+- Total rounds: {len(self.execution_log)}
+- Session ID: {self.session_id}
+
+Note: Automatic interpretation generation failed. This is a fallback summary.
+"""
+                file_name = f"final_interpretation_{self.session_id}.txt"
+                result = self.execute_tool("write_text", {
+                    "content": fallback_content,
+                    "file_name": file_name
+                })
+                print(f"   ✅ Saved fallback interpretation: {result}")
+                return file_name
+                
+        except Exception as e:
+            print(f"   ⚠️  Error generating final interpretation: {e}")
+            return ""
 
 
 if __name__ == "__main__":
