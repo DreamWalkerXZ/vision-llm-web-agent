@@ -13,8 +13,8 @@ class SemanticDOMAnalyzer:
         }
 
     def extract_dom_from_page(self, page):
-        """直接从 playwright 的 page 提取交互元素（包含位置信息）"""
-        # 使用 JavaScript 获取可见元素及其位置
+        """Extract interactive elements from a Playwright page (includes position data)."""
+        # Use JavaScript to capture visible elements and their positions
         js_script = """
         () => {
             const elements = [];
@@ -54,7 +54,7 @@ class SemanticDOMAnalyzer:
                     const tag = el.tagName.toLowerCase();
                     const role = (el.getAttribute('role') || '').toLowerCase();
                     
-                    // 获取所有属性
+                    // Collect all attributes
                     const attrs = {};
                     for (let attr of el.attributes) {
                         attrs[attr.name] = attr.value;
@@ -81,19 +81,19 @@ class SemanticDOMAnalyzer:
         }
         """
         
-        # 执行 JavaScript 获取元素信息
+        # Execute JavaScript in the page to capture element metadata
         raw_elements = page.evaluate(js_script)
         
-        # 确保返回的是列表
+        # Ensure the returned value is a list
         if not isinstance(raw_elements, list):
             print(f"⚠️  JavaScript returned unexpected type: {type(raw_elements)}")
             return []
         
-        # 为每个元素添加语义分析
+        # Attach semantic annotations to each element
         elements = []
         for el_data in raw_elements:
             try:
-                # 验证元素数据结构
+                # Validate the structure of the element data
                 if not isinstance(el_data, dict):
                     print(f"⚠️  Element data is not a dict: {type(el_data)}")
                     continue
@@ -119,7 +119,7 @@ class SemanticDOMAnalyzer:
         return elements
 
     def is_interactive(self, el, tag, role):
-        """判断是否为交互元素（已弃用，保留用于兼容性）"""
+        """Determine if an element is interactive (deprecated, kept for compatibility)."""
         if role in self.interactive_roles:
             return True
         if tag in ["button", "a", "input", "select", "textarea", "label"]:
@@ -128,7 +128,7 @@ class SemanticDOMAnalyzer:
         return False
 
     def analyze_semantic_from_data(self, tag, text, attrs, role):
-        """从数据字典进行启发式语义分类"""
+        """Perform heuristic semantic classification from a data dictionary."""
         lower_text = text.lower()
         class_value = attrs.get("class", "")
         if isinstance(class_value, list):
@@ -137,23 +137,23 @@ class SemanticDOMAnalyzer:
             class_str = str(class_value).lower()
 
         if any(k in class_str for k in ["video", "player", "media"]) or tag == "video":
-            return {"type": "video_content", "hint": "🎬 点击观看视频"}
-        if any(k in lower_text for k in ["播放", "play", "▶", "►"]) or "play" in class_str:
-            return {"type": "play_button", "hint": "▶️ 点击播放"}
-        if "search" in class_str or "搜索" in lower_text or attrs.get("type") == "search":
-            return {"type": "search_input", "hint": "🔍 输入搜索内容"}
-        if any(k in lower_text for k in ["提交", "submit", "send"]):
-            return {"type": "submit_button", "hint": "✅ 提交表单"}
-        if any(k in lower_text for k in ["下载", "download", "保存"]):
-            return {"type": "download_button", "hint": "⬇️ 下载文件"}
-        if any(k in lower_text for k in ["广告", "ad", "sponsor"]):
-            return {"type": "advertisement", "hint": "⚠️ 广告内容"}
+            return {"type": "video_content", "hint": "🎬 Click to watch the video"}
+        if any(k in lower_text for k in ["play", "▶", "►"]) or "play" in class_str:
+            return {"type": "play_button", "hint": "▶️ Click to play"}
+        if "search" in class_str or attrs.get("type") == "search":
+            return {"type": "search_input", "hint": "🔍 Enter search terms"}
+        if any(k in lower_text for k in ["submit", "send"]):
+            return {"type": "submit_button", "hint": "✅ Submit the form"}
+        if any(k in lower_text for k in ["download", "save"]):
+            return {"type": "download_button", "hint": "⬇️ Download the file"}
+        if any(k in lower_text for k in ["ad", "advertisement", "sponsor"]):
+            return {"type": "advertisement", "hint": "⚠️ Sponsored content"}
         if tag == "a" or role == "navigation":
-            return {"type": "navigation_link", "hint": "🧭 点击导航"}
-        return {"type": "unknown", "hint": f"🎯 与 {tag} 交互"}
+            return {"type": "navigation_link", "hint": "🧭 Click to navigate"}
+        return {"type": "unknown", "hint": f"🎯 Interact with {tag}"}
     
     def analyze_semantic(self, el, tag, text, attrs, role):
-        """启发式语义分类（保留用于兼容性）"""
+        """Heuristic semantic classification (compatibility wrapper)."""
         return self.analyze_semantic_from_data(tag, text, attrs, role)
     
     def filter_interactive_elements(self, client, elements, user_prompt, model='qwen-flash', max_elements=20):
@@ -172,16 +172,22 @@ class SemanticDOMAnalyzer:
             all_elements[el['tag']].append(el)
         
         filtered_elements = []
-        system_prompt = f"你是一个html元素筛选器，为下游的web agent筛选有用的html元素，比如搜索框元素，点击后搜索播放等交互元素。注意，一些带有nav/search性质的div元素也需要保留。用户将输入一个问题，以及一系列结构化的元素。请根据问题，筛选出与问题最相关的'max = {max_elements}'元素，并返回这些元素的编号列表。你只需要返回编号列表，格式为：```json [1,3,5]```，不要返回其他内容。"
+        system_prompt = (
+            "You are an HTML element filter helping a downstream web agent. Share only the "
+            "most relevant interactive elements such as search inputs, navigation links, "
+            "and buttons. Keep div elements with nav/search semantics when useful. The user "
+            "will provide a question and a structured element list. Return the indexes of up "
+            f"to max = {max_elements} elements in the format ```json [1,3,5]``` and nothing else."
+        )
         for tag in input_elements:
             if(len(input_elements[tag])<=max_elements):
-                print(f"✅ 选择了元素 [{tag}] 数量 {len(input_elements[tag])}")
+                print(f"✅ Selected all <{tag}> elements because count {len(input_elements[tag])} <= {max_elements}")
                 filtered_elements.extend(all_elements[tag])
                 continue
             input_prompt = "\n".join(input_elements[tag])
             message = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"{user_prompt}\n\n以下是页面上的<{tag}>元素：\n{input_prompt}"}
+                {"role": "user", "content": f"{user_prompt}\n\nHere are the <{tag}> elements on the page:\n{input_prompt}"}
             ]
             response = client.chat.completions.create(
                 model=model,
@@ -189,7 +195,7 @@ class SemanticDOMAnalyzer:
                 temperature=0.7,
                 max_tokens=200,
             )
-            # 使用re 解析编号列表```json [1,3,5]```
+            # Use regex to parse an index list formatted as ```json [1,3,5]```
             import re
             match = re.search(r'```json\s*(\[[\d,\s]*\])\s*```', response.choices[0].message.content)
             if match:
@@ -200,18 +206,18 @@ class SemanticDOMAnalyzer:
                     for num in num_list:
                         if 0 <= num < len(elems):
                             filtered_elements.append(all_elements[tag][num])
-                            print(f"✅ 选择了元素 [{tag}] 编号 {num}")
+                            print(f"✅ Selected <{tag}> element #{num}")
                 except Exception as e:
-                    print(f"解析编号列表失败: {e}")
+                    print(f"Failed to parse index list: {e}")
         
         return filtered_elements
 
     def to_llm_representation(self, elements, max_elements=5):
-        """转为 LLM 可读文本（同时保留位置信息）"""
+        """Convert to an LLM-readable text format while preserving position data."""
         lines = []
         elements_count = {el['tag']: 0 for el in elements}
         count = 0
-        filtered_elements = []  # 保存被选中的元素（包含位置信息）
+        filtered_elements = []  # Store selected elements (with bounding boxes)
         
         for i, el in enumerate(elements):
             if elements_count[el['tag']] >= max_elements:
@@ -219,7 +225,7 @@ class SemanticDOMAnalyzer:
             count += 1
             elements_count[el['tag']] += 1
             
-            # 添加到过滤后的元素列表
+            # Track the element in the filtered list
             filtered_elements.append({
                 "index": count,
                 "element": el
@@ -249,7 +255,7 @@ class SemanticDOMAnalyzer:
         return "\n".join(lines), filtered_elements
 
     def analyze_page(self, page, client, user_prompt, model='qwen-flash', max_elements=20):
-        """主入口：分析已有 page 对象"""
+        """Main entry point: analyze an existing Playwright page object."""
         elements = self.extract_dom_from_page(page)
         if model is None or model == '':
             filtered_elements = elements
@@ -260,64 +266,64 @@ class SemanticDOMAnalyzer:
         return {
             "elements": elements,
             "llm_text": text_repr,
-            "filtered_elements": filtered_elements  # 包含序号和位置的过滤元素
+            "filtered_elements": filtered_elements  # Includes indexes and location data
         }
     
     def annotate_screenshot(self, screenshot_path: str, filtered_elements: list, output_path: Optional[str] = None) -> str:
         """
-        在截图上标注元素序号
+        Annotate a screenshot with element indexes.
         
         Args:
-            screenshot_path: 原始截图路径
-            filtered_elements: 过滤后的元素列表（包含index和element）
-            output_path: 输出路径，如果为None则覆盖原文件
+            screenshot_path: Path to the original screenshot file.
+            filtered_elements: Filtered element list with index and element entries.
+            output_path: Optional output path; overwrites the source file when None.
         
         Returns:
-            标注后的截图路径
+            Path to the annotated screenshot.
         """
         try:
-            # 打开截图
+            # Open the screenshot
             img = Image.open(screenshot_path)
             draw = ImageDraw.Draw(img)
             
-            # 尝试加载字体，如果失败则使用默认字体
+            # Try to load a readable font and fall back to the default
             try:
-                # Windows 系统字体
+                # Windows system font
                 font = ImageFont.truetype("arial.ttf", 16)
                 font_large = ImageFont.truetype("arial.ttf", 20)
             except:
                 try:
-                    # 备选字体
+                    # Alternate font path
                     font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 16)
                     font_large = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 20)
                 except:
-                    # 使用默认字体
+                    # Use the default font
                     font = ImageFont.load_default()
                     font_large = ImageFont.load_default()
             
-            # 为每个元素绘制标注
+            # Draw annotations for each element
             for item in filtered_elements:
                 index = item["index"]
                 el = item["element"]
                 bbox = el["bbox"]
                 
-                # 计算标签位置（元素中心点）
+                # Compute the label position (element center)
                 center_x = bbox["centerX"]
                 center_y = bbox["centerY"]
                 
-                # 绘制半透明背景圆圈
+                # Draw a semi-transparent background circle
                 label_text = str(index)
                 
-                # 计算文本边界框以确定圆圈大小
-                # 使用 textbbox 获取文本边界
+                # Derive the circle size from the text bounding box
+                # textbbox returns the text bounds
                 bbox_text = draw.textbbox((0, 0), label_text, font=font_large)
                 text_width = bbox_text[2] - bbox_text[0]
                 text_height = bbox_text[3] - bbox_text[1]
                 
-                # 圆圈半径（稍大于文本）
+                # Circle radius slightly larger than the text
                 radius = max(text_width, text_height) // 2 + 8
                 
-                # 绘制半透明红色圆圈（通过多次绘制实现半透明效果）
+                # Draw a semi-transparent red circle
                 circle_bbox = [
                     center_x - radius,
                     center_y - radius,
@@ -325,22 +331,22 @@ class SemanticDOMAnalyzer:
                     center_y + radius
                 ]
                 
-                # 绘制外圈（红色边框）
+                # Draw the outer red border
                 draw.ellipse(circle_bbox, fill=(255, 0, 0, 180), outline=(255, 0, 0), width=2)
                 
-                # 绘制文本（白色）
-                # 计算文本位置使其居中
+                # Draw the label text (white)
+                # Center the text inside the circle
                 text_x = center_x - text_width // 2
                 text_y = center_y - text_height // 2
                 draw.text((text_x, text_y), label_text, fill=(255, 255, 255), font=font_large)
                 
-                # 可选：绘制边界框（用于调试）
+                # Optional: draw the bounding box for debugging
                 # draw.rectangle(
                 #     [bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]],
                 #     outline=(0, 255, 0), width=1
                 # )
             
-            # 保存标注后的截图
+            # Save the annotated screenshot
             if output_path is None:
                 output_path = screenshot_path
             
@@ -351,7 +357,7 @@ class SemanticDOMAnalyzer:
             print(f"❌ analyze_page error: {str(e)}")
             import traceback
             traceback.print_exc()
-            # 返回空结果而不是抛出异常
+            # Return an empty result instead of raising
             return {
                 "elements": [],
                 "llm_text": f"Error analyzing page: {str(e)}",
