@@ -12,45 +12,51 @@ from PIL import Image
 from .base import tool
 from .browser_control import browser_state
 from ..config.settings import ARTIFACTS_DIR
+import pytesseract
 
 
-def normalize_file_path(file_path: str, is_input: bool = False) -> str:
+# file_operations.py (Updated)
+
+def normalize_file_path(file_path: str, is_input: bool = False) -> Path:
     """
-    Normalize file path to artifacts/filename format (single level, no nesting).
-    
-    Args:
-        file_path: File path provided by agent (should be just filename like "abc.pdf")
-        is_input: If True, this is an input file path (for reading). If False, output path (for saving).
-    
-    Returns:
-        Normalized path in format "artifacts_dir/filename" (single level)
+    Normalize file path to be relative to the ARTIFACTS_DIR, supporting nesting.
     """
-    # Extract filename from any path format (remove all directory prefixes)
     path_obj = Path(file_path)
-    filename = path_obj.name
+
+    # 1. If path is absolute, use it directly (e.g., used by temp pytest fixtures)
+    if path_obj.is_absolute():
+        return path_obj
     
-    # Get artifacts directory as string for comparison
-    artifacts_dir_str = str(ARTIFACTS_DIR)
+    # 2. If path is already rooted at ARTIFACTS_DIR, use it
+    if path_obj.parts[0] == ARTIFACTS_DIR.name:
+        # e.g., 'artifacts/test/file.pdf'
+        return path_obj
     
-    # For input files, try to find in artifacts or current directory
+    # 3. Otherwise, treat it as a path relative to ARTIFACTS_DIR (supports 'test/file.pdf')
+    # This is the key change to support nested paths in tests
+    full_path = ARTIFACTS_DIR / path_obj
+    
+    # For input files, handle existence checks
     if is_input:
-        # Try artifacts_dir/filename first
-        artifacts_path = ARTIFACTS_DIR / filename
-        if artifacts_path.exists():
-            return str(artifacts_path)
-        # Try original path as-is (might be absolute or relative with artifacts/)
+        # Try full_path (artifacts/test/file.pdf)
+        if full_path.exists():
+            return full_path
+        # Fallback 1: Try absolute paths from temp fixtures (already handled by path_obj.is_absolute())
+        # Fallback 2: Try original path relative to CWD if it exists (less common, but safe)
         if path_obj.exists():
-            return str(path_obj)
-        # Try with artifacts_dir prefix if original path had it
-        if file_path.startswith(artifacts_dir_str + "/") or file_path.startswith("artifacts/"):
-            artifacts_path = Path(file_path)
-            if artifacts_path.exists():
-                return str(artifacts_path)
-        # Return artifacts_dir/filename as default (will fail if file doesn't exist)
-        return str(artifacts_path)
-    else:
-        # For output files, always use artifacts_dir/filename (single level, no nesting)
-        return str(ARTIFACTS_DIR / filename)
+            return path_obj
+        # If nothing exists, return the expected full path so the exception can be raised properly
+        return full_path
+    
+    # For output files, always return the full, nested path relative to ARTIFACTS_DIR
+    return full_path
+
+# Update all tool functions to use the returned Path object directly
+# For example, in write_text_to_file:
+#    file_path_obj = normalize_file_path(file_name, is_input=False)
+#    file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+#    with open(file_path_obj, "w", encoding="utf-8") as f:
+#        f.write(content)
 
 
 @tool(
@@ -165,17 +171,23 @@ def extract_pdf_text(file_name: str, page_num: Optional[int] = None) -> str:
 def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] = None) -> str:
     """Extract images from a PDF file"""
     try:
-        # Normalize PDF path to artifacts/filename (single level)
-        pdf_path = normalize_file_path(file_name, is_input=True)
+        # 1. 规范化 PDF 输入文件路径 (假设它返回 Path 对象)
+        pdf_path_obj = normalize_file_path(file_name, is_input=True)
         
-        # For output directory, extract just the name and use artifacts_dir/dirname
-        output_dir_obj = Path(output_dir)
-        dirname = output_dir_obj.name if output_dir_obj.name else output_dir
-        output_dir = str(ARTIFACTS_DIR / dirname)
+        # 2. 🚨 关键修复：使用 normalize_file_path 规范化输出目录路径。
+        #    这将支持 'test/extracted_images' 这样的嵌套路径。
+        output_dir_path = normalize_file_path(output_dir, is_input=False)
         
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        # 3. 确保目标输出目录存在
+        #    因为 output_dir 已经是最终的目录路径 (如 artifacts/test/extracted_images)，
+        #    我们直接创建它，包括所有父目录。
+        output_dir_path.mkdir(parents=True, exist_ok=True)
         
-        doc = pymupdf.open(pdf_path)
+        # 检查 PDF 文件是否存在 (使用规范化后的 Path 对象)
+        if not pdf_path_obj.exists():
+             return f"❌ PDF file not found at: {str(pdf_path_obj)}"
+        
+        doc = pymupdf.open(pdf_path_obj) # 使用 Path 对象
         saved_images = []
         
         pages_to_process = [page_num] if page_num is not None else range(len(doc))
@@ -194,7 +206,8 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
                 image_ext = base_image["ext"]
                 
                 image_filename = f"page_{page_idx+1}_img_{img_idx+1}.{image_ext}"
-                image_path = Path(output_dir) / image_filename
+                # 4. 关键修复：将图片保存到正确的、支持嵌套的目录 Path 对象中
+                image_path = output_dir_path / image_filename
                 
                 with open(image_path, "wb") as img_file:
                     img_file.write(image_bytes)
@@ -204,7 +217,8 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
         doc.close()
         
         if saved_images:
-            return f"✅ Extracted {len(saved_images)} images to {output_dir}:\n" + "\n".join(saved_images)
+            # 5. 返回信息使用正确的目录路径
+            return f"✅ Extracted {len(saved_images)} images to {str(output_dir_path)}:\n" + "\n".join(saved_images)
         else:
             return "⚠️ No images found in the PDF"
     
@@ -276,3 +290,57 @@ def write_text_to_file(content: str, file_name: str) -> str:
     
     except Exception as e:
         return f"❌ Failed to write text: {str(e)}"
+
+@tool(
+    name="ocr_image_to_text",
+    description="Perform Optical Character Recognition (OCR) on an image file and save the extracted text to a new file. Provide only filenames (e.g., 'image.png', 'output.txt'), not directory paths.",
+    parameters={
+        "image_file_name": "string (required, filename only, e.g., 'scan.png')",
+        "output_file_name": "string (required, filename only, e.g., 'recognized_text.txt')"
+    },
+    category="file_operations"
+)
+def ocr_image_to_text(image_file_name: str, output_file_name: str) -> str:
+    """Perform OCR on an image file and save the extracted text to a new file."""
+    try:
+        # 实际运行时需要导入，这里假设它在执行环境中可用
+        
+        # 1. 规范化输入图片文件路径并检查
+        image_path_obj = normalize_file_path(image_file_name, is_input=True)
+        
+        if not image_path_obj.exists():
+            return f"❌ Image file not found at: {str(image_path_obj)}"
+        
+        # 2. 执行 OCR 识别
+        # 使用 Pillow 打开图片，使用 pytesseract 提取文本
+        img = Image.open(image_path_obj)
+        # 您可以在这里添加语言配置，例如：pytesseract.image_to_string(img, lang='chi_sim')
+        extracted_text = pytesseract.image_to_string(img)
+        
+        # 3. 规范化输出文本文件路径
+        text_save_path_obj = normalize_file_path(output_file_name, is_input=False)
+        
+        # 4. 确保输出目录存在
+        text_save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 5. 将识别出的文本写入文件
+        with open(text_save_path_obj, "w", encoding="utf-8") as f:
+            f.write(extracted_text)
+            
+        # 6. 返回成功信息
+        if extracted_text.strip():
+            # 提取前50个字符作为预览
+            preview = extracted_text.strip()[:50].replace('\n', ' ')
+            return (
+                f"✅ OCR completed successfully on {image_file_name}. "
+                f"Text saved to: {str(text_save_path_obj)}\n"
+                f"> Preview: '{preview}'..."
+            )
+        else:
+            return f"⚠️ OCR completed, but no meaningful text was extracted from {image_file_name}. Text saved to: {str(text_save_path_obj)}"
+        
+    except ImportError as e:
+        # 捕获 pytesseract 或 PIL 导入错误
+        return f"❌ Failed to perform OCR. Required library missing: {e}. Please ensure 'pytesseract' and 'Pillow' are installed."
+    except Exception as e:
+        return f"❌ Failed to perform OCR or save text: {str(e)}"

@@ -196,7 +196,8 @@ When task is complete:
 6. **Error Recovery:** If actions fail 2+ times, try different approaches - never repeat the exact same action more than 2 times
 7. Call download_pdf for pdf download.
 8. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
-
+9. Incase of opening a pdf link, always download the pdf using download_pdf tool and then consider using extract text/images using pdf_extract_text/pdf_extract_images tools on the pdf that you download to local.
+10. When you are required to generate  summaries or answers based on large text content, always use the pdf_extract_text tool to extract text from the pdf and then generate your summaries/answers based on the extracted text and generate a file.
 **Preferences:**
 1. Prefer arXiv for academic and technical reports.
 """

@@ -118,12 +118,12 @@ class Agent:
         start_time = time.time()
         
         # Open browser to DuckDuckGo before first round
-        print("🌐 Opening browser to https://duckduckgo.com/...")
+        print("🌐 Opening browser to attention")
         try:
             registry = self.get_tool_registry()
             goto_func = registry.get_tool("goto")
             if goto_func:
-                result = goto_func("https://duckduckgo.com/")
+                result = goto_func("https://www.google.com/search?sca_esv=d109efa35e6c2d6e&udm=2&fbs=AIIjpHybaGNnaZw_4TckIDK59Rtx7EmYoHRazOl26McMSIhENyiO40OXF-2AmuvvRc2crJUkHA811tAZAdGenfwW5sdCbc3M2kptmBz0_ocnl8B3KX5TVA74t1UZG-nT2ZLlNkhiVZnwffORGe1_AognTR0Mjk1pi-2sEQZ5UPWs-wFyAAV9PismTXphUPqgsXcX9nOgkkM3TVb201Gz_uEnkVR1LVdEIQ&q=duck+image&sa=X&ved=2ahUKEwiR5f_j2P2QAxWu1jgGHcOAPMcQtKgLegQIDhAB&biw=1536&bih=833&dpr=2")
                 print(f"   {result}")
             else:
                 print("   ⚠️  goto tool not available")
