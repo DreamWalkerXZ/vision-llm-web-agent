@@ -61,6 +61,10 @@ class Agent:
         self.execution_log: List[Dict[str, Any]] = []
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Context mode: 'web_browsing' or 'local_file_processing'
+        self.context_mode = "web_browsing"
+        self.downloaded_pdf_files: List[str] = []  # Track downloaded PDFs
+        
         # Create artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         
@@ -91,12 +95,16 @@ class Agent:
             result = tool_func(**parameters)
             result_str = str(result)
             
-            # Auto-process PDF after successful download
+            # Switch to local file processing mode after successful PDF download
             if tool_name == "download_pdf" and "✅" in result_str:
                 file_name = parameters.get("file_name")
                 if file_name:
-                    print(f"\n📄 Auto-processing PDF: {file_name}")
-                    self._auto_process_pdf(file_name)
+                    self.downloaded_pdf_files.append(file_name)
+                    # Switch context mode
+                    self.context_mode = "local_file_processing"
+                    print(f"\n📄 PDF downloaded: {file_name}")
+                    print(f"🔄 Context switched to: local_file_processing mode")
+                    print(f"   💡 VLLM should now use pdf_extract_text/pdf_extract_images tools to process the local file")
             
             return result_str
         except TypeError as e:
@@ -104,103 +112,6 @@ class Agent:
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
     
-    def _auto_process_pdf(self, file_name: str):
-        """
-        Automatically process a downloaded PDF: extract text, extract images, 
-        perform OCR on images, and generate summary.
-        
-        Args:
-            file_name: Name of the PDF file (filename only, e.g., 'abc.pdf')
-        """
-        registry = self.get_tool_registry()
-        results = []
-        
-        try:
-            # 1. Extract text from PDF
-            print(f"   📝 Step 1/4: Extracting text from PDF...")
-            extract_text_func = registry.get_tool("pdf_extract_text")
-            extracted_text_content = None
-            if extract_text_func:
-                text_result = extract_text_func(file_name=file_name)
-                results.append(f"Text extraction: {text_result[:200]}...")
-                
-                # Save extracted text to file (if extraction was successful)
-                if "❌" not in str(text_result):
-                    # Extract was successful, save the text
-                    write_text_func = registry.get_tool("write_text")
-                    if write_text_func:
-                        text_file_name = file_name.replace(".pdf", "_extracted_text.txt")
-                        write_text_func(content=str(text_result), file_name=text_file_name)
-                        results.append(f"✅ Text saved to: {text_file_name}")
-                        extracted_text_content = str(text_result)
-            else:
-                results.append("⚠️ pdf_extract_text tool not available")
-            
-            # 2. Extract images from PDF
-            print(f"   🖼️  Step 2/4: Extracting images from PDF...")
-            extract_images_func = registry.get_tool("pdf_extract_images")
-            if extract_images_func:
-                # Use a subdirectory for images
-                image_dir = file_name.replace(".pdf", "_images")
-                images_result = extract_images_func(file_name=file_name, output_dir=image_dir)
-                results.append(f"Images extraction: {images_result[:200]}...")
-                
-                # 3. Perform OCR on extracted images
-                if "✅" in str(images_result) or "Extracted" in str(images_result):
-                    print(f"   🔍 Step 3/4: Performing OCR on extracted images...")
-                    ocr_func = registry.get_tool("ocr_image_to_text")
-                    if ocr_func:
-                        # Find extracted images
-                        image_dir_path = self.artifacts_dir / image_dir
-                        if image_dir_path.exists():
-                            image_files = list(image_dir_path.glob("*.png")) + list(image_dir_path.glob("*.jpg")) + \
-                                         list(image_dir_path.glob("*.jpeg"))
-                            
-                            for img_file in image_files:
-                                # Use relative path from artifacts_dir for OCR function
-                                # The function expects filename relative to artifacts (e.g., "images/page_1_img_1.png")
-                                relative_img_path = str(img_file.relative_to(self.artifacts_dir))
-                                ocr_output_name = f"{image_dir}/{img_file.stem}_ocr.txt"
-                                ocr_result = ocr_func(
-                                    image_file_name=relative_img_path,
-                                    output_file_name=ocr_output_name
-                                )
-                                results.append(f"OCR for {img_file.name}: {ocr_result[:150]}...")
-                    else:
-                        results.append("⚠️ ocr_image_to_text tool not available")
-            else:
-                results.append("⚠️ pdf_extract_images tool not available")
-            
-            # 4. Generate summary
-            print(f"   📊 Step 4/4: Generating PDF summary...")
-            # Use extracted text for summarization (reuse from step 1 to avoid re-extraction)
-            if extracted_text_content:
-                try:
-                    # Generate summary using VLLM
-                    summary = self.vllm.summarize_text(extracted_text_content, max_length=1000)
-                    
-                    # Save summary to file
-                    write_text_func = registry.get_tool("write_text")
-                    if write_text_func:
-                        summary_file_name = file_name.replace(".pdf", "_summary.txt")
-                        write_text_func(content=summary, file_name=summary_file_name)
-                        results.append(f"✅ Summary generated and saved to: {summary_file_name}")
-                        results.append(f"Summary preview: {summary[:200]}...")
-                    else:
-                        results.append(f"Summary generated: {summary[:200]}...")
-                except Exception as e:
-                    results.append(f"⚠️ Failed to generate summary: {str(e)}")
-            else:
-                results.append("⚠️ No extracted text available for summarization")
-            
-            print(f"   ✅ Auto-processing completed: {len(results)} steps")
-            for result in results:
-                print(f"      - {result}")
-            
-        except Exception as e:
-            print(f"   ⚠️  Error during auto-processing: {str(e)}")
-            import traceback
-            traceback.print_exc()
     
     def execute(self, instruction: str) -> str:
         """
@@ -329,12 +240,30 @@ class Agent:
         
         # 2. VLLM decides next action
         print("🤔 VLLM planning next action...")
-        state_info = {
-            "screenshot": screenshot_path if screenshot_available else None,
-            "dom": dom[:2000],  # Limit DOM length
-            "round": round_num,
-            "screenshot_available": screenshot_available
-        }
+        
+        # Adjust state info based on context mode
+        if self.context_mode == "local_file_processing":
+            # In local file processing mode, screenshot/DOM are not relevant
+            state_info = {
+                "context_mode": "local_file_processing",
+                "screenshot": None,
+                "dom": "N/A - Currently processing local files, web browser context not relevant",
+                "round": round_num,
+                "screenshot_available": False,
+                "available_local_files": self.downloaded_pdf_files,
+                "instruction": "You are currently in LOCAL FILE PROCESSING mode. Use pdf_extract_text, pdf_extract_images, and ocr_image_to_text tools to process the downloaded PDF files. These tools work on local files in the artifacts/ directory. Do NOT use web browser tools (click, type_text, etc.) in this mode."
+            }
+            print(f"   📁 Context: Local file processing mode (available files: {self.downloaded_pdf_files})")
+        else:
+            # Normal web browsing mode
+            state_info = {
+                "context_mode": "web_browsing",
+                "screenshot": screenshot_path if screenshot_available else None,
+                "dom": dom[:2000],  # Limit DOM length
+                "round": round_num,
+                "screenshot_available": screenshot_available,
+                "instruction": "Analyze the current state and decide the next action. Respond with valid JSON."
+            }
         
         try:
             response = self.vllm.plan_next_action(
@@ -442,10 +371,28 @@ class Agent:
                 "tool_execution": tool_name,
                 "result": result
             }
-            self.history.append({
-                "role": "user",
-                "content": json.dumps(tool_result, ensure_ascii=False, indent=2)
-            })
+            
+            # Add context switch notification for PDF downloads
+            if tool_name == "download_pdf" and "✅" in str(result):
+                file_name = parameters.get("file_name")
+                context_notification = {
+                    "tool_execution": tool_name,
+                    "result": result,
+                    "context_switch": {
+                        "mode": "local_file_processing",
+                        "message": f"PDF file '{file_name}' has been successfully downloaded to local artifacts directory. You should now use local file processing tools (pdf_extract_text, pdf_extract_images, ocr_image_to_text) to process this file. These tools work on local files and do NOT require web browser operations. Ignore any screenshot/DOM information when processing local files.",
+                        "available_local_files": [file_name]
+                    }
+                }
+                self.history.append({
+                    "role": "user",
+                    "content": json.dumps(context_notification, ensure_ascii=False, indent=2)
+                })
+            else:
+                self.history.append({
+                    "role": "user",
+                    "content": json.dumps(tool_result, ensure_ascii=False, indent=2)
+                })
             
             # Log execution with VLLM raw data
             self.execution_log.append({

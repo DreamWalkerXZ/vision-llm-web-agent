@@ -188,12 +188,13 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
              return f"❌ PDF file not found at: {str(pdf_path_obj)}"
         
         doc = pymupdf.open(pdf_path_obj) # 使用 Path 对象
+        total_pages = len(doc)
         saved_images = []
         
-        pages_to_process = [page_num] if page_num is not None else range(len(doc))
+        pages_to_process = [page_num] if page_num is not None else range(total_pages)
         
         for page_idx in pages_to_process:
-            if page_idx >= len(doc):
+            if page_idx >= total_pages:
                 continue
                 
             page = doc[page_idx]
@@ -217,10 +218,30 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
         doc.close()
         
         if saved_images:
-            # 5. 返回信息使用正确的目录路径
-            return f"✅ Extracted {len(saved_images)} images to {str(output_dir_path)}:\n" + "\n".join(saved_images)
+            # 5. 返回信息包含相对路径（相对于ARTIFACTS_DIR），方便VLLM使用
+            from ..config.settings import ARTIFACTS_DIR
+            relative_paths = []
+            for img_path in saved_images:
+                try:
+                    # 计算相对于ARTIFACTS_DIR的相对路径
+                    rel_path = Path(img_path).relative_to(ARTIFACTS_DIR)
+                    relative_paths.append(str(rel_path))
+                except ValueError:
+                    # 如果不在ARTIFACTS_DIR下，使用完整路径
+                    relative_paths.append(img_path)
+            
+            result_msg = f"✅ Extracted {len(saved_images)} images to {output_dir}:\n"
+            result_msg += "\n".join([f"  - {rel_path}" for rel_path in relative_paths])
+            result_msg += f"\n💡 To use OCR, provide the relative path (e.g., '{relative_paths[0] if relative_paths else 'extracted_images/page_X_img_Y.png'}')"
+            if page_num is not None:
+                result_msg += f"\n💡 Note: Only extracted from page {page_num + 1}. PDF has {total_pages} pages total. If you need more images, try extracting from other pages or omit page_num to extract from all pages."
+            return result_msg
         else:
-            return "⚠️ No images found in the PDF"
+            # Provide helpful guidance when no images found
+            if page_num is not None:
+                return f"⚠️ No images found on page {page_num + 1} of the PDF. The PDF has {total_pages} pages total. Try extracting from other pages (e.g., page_num=2, page_num=3) or omit page_num parameter to extract from all pages."
+            else:
+                return f"⚠️ No images found in the PDF (searched all {total_pages} pages)."
     
     except Exception as e:
         return f"❌ Failed to extract images from PDF: {str(e)}"
@@ -308,8 +329,26 @@ def ocr_image_to_text(image_file_name: str, output_file_name: str) -> str:
         # 1. 规范化输入图片文件路径并检查
         image_path_obj = normalize_file_path(image_file_name, is_input=True)
         
+        # 2. 如果文件不存在，尝试在常见子目录中搜索
         if not image_path_obj.exists():
-            return f"❌ Image file not found at: {str(image_path_obj)}"
+            from ..config.settings import ARTIFACTS_DIR
+            # 尝试在常见子目录中查找
+            common_dirs = ["extracted_images", "images", "output_images"]
+            filename = Path(image_file_name).name  # 只取文件名
+            
+            for subdir in common_dirs:
+                potential_path = ARTIFACTS_DIR / subdir / filename
+                if potential_path.exists():
+                    image_path_obj = potential_path
+                    break
+            else:
+                # 如果还是找不到，返回错误，但提供搜索建议
+                search_hints = "\n".join([f"  - {subdir}/{filename}" for subdir in common_dirs])
+                return (
+                    f"❌ Image file not found at: {str(image_path_obj)}\n"
+                    f"💡 Tried searching in common directories:\n{search_hints}\n"
+                    f"💡 Please provide the full relative path (e.g., 'extracted_images/{filename}')"
+                )
         
         # 2. 执行 OCR 识别
         # 使用 Pillow 打开图片，使用 pytesseract 提取文本

@@ -195,13 +195,20 @@ When task is complete:
 5. If there is a CAPTCHA, try another site, DO NOT try to solve the CAPTCHA.
 6. **Error Recovery:** If actions fail 2+ times, try different approaches - never repeat the exact same action more than 2 times
 7. Call download_pdf for pdf download.
-8. Call pdf_extract_text/pdf_extract_images for pdf content extraction.
+8. Call pdf_extract_text/pdf_extract_images for pdf content extraction. **IMPORTANT:** When extracting images, if a specific page has no images, try extracting from other pages or omit the page_num parameter to extract from all pages. The first image might not be on page 1.
 9. Call save_image to save images.
 10. Call write_text to save text content.
-11. Call OCR tool for extracting text from images.
-12. Afer downloading a PDF, Always focus on extracting text/images from it before proceeding.
-12. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
-13. Prefer arXiv for academic and technical reports.
+11. Call OCR tool for extracting text from images. **IMPORTANT:** When using ocr_image_to_text, provide the FULL relative path from artifacts/ directory (e.g., "extracted_images/page_3_img_1.png"), not just the filename. The pdf_extract_images tool will return the relative paths - use those exact paths for OCR.
+12. **CRITICAL - Context Modes:**
+    - **Web Browsing Mode (default):** Use browser tools (click, type_text, goto, etc.) based on screenshot and DOM. This is for navigating and interacting with web pages.
+    - **Local File Processing Mode:** When a PDF is successfully downloaded, the context switches to local file processing. In this mode:
+      * Screenshot and DOM information are NOT relevant - ignore them
+      * Use local file processing tools: pdf_extract_text, pdf_extract_images, ocr_image_to_text
+      * These tools work on files in the artifacts/ directory
+      * Do NOT use web browser tools in this mode
+      * After processing local files, you can switch back to web browsing if needed
+13. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
+14. Prefer arXiv for academic and technical reports.
 """
         
         return prompt
@@ -238,11 +245,13 @@ When task is complete:
         # Add current state with vision input (if screenshot available)
         current_state_content = []
         
-        # Check if screenshot is available
+        # Check if screenshot is available and relevant
         screenshot_available = state_info.get('screenshot_available', False)
         screenshot_path = state_info.get('screenshot')
+        context_mode = state_info.get('context_mode', 'web_browsing')
         
-        if screenshot_available and screenshot_path:
+        # Only include screenshot if in web browsing mode
+        if screenshot_available and screenshot_path and context_mode == 'web_browsing':
             try:
                 # Add screenshot
                 current_state_content.append({
@@ -259,13 +268,20 @@ When task is complete:
         # Add text description in JSON format
         dom_text = state_info.get('dom', 'N/A')
         round_num = state_info.get('round', 0)
+        context_mode = state_info.get('context_mode', 'web_browsing')
         
         current_state_json = {
             "round": round_num,
+            "context_mode": context_mode,
             "screenshot_available": screenshot_available,
             "dom_summary": dom_text,
-            "instruction": "Analyze the current state and decide the next action. Respond with valid JSON."
+            "instruction": state_info.get('instruction', "Analyze the current state and decide the next action. Respond with valid JSON.")
         }
+        
+        # Add context-specific information
+        if context_mode == "local_file_processing":
+            current_state_json["available_local_files"] = state_info.get('available_local_files', [])
+            current_state_json["note"] = "You are in LOCAL FILE PROCESSING mode. Use pdf_extract_text, pdf_extract_images, ocr_image_to_text tools. Ignore screenshot/DOM."
         
         current_state_content.append({
             "type": "text",
