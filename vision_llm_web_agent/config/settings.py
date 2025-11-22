@@ -22,6 +22,7 @@ LOGS_DIR.mkdir(exist_ok=True)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_LANGUAGE_MODEL = os.getenv("OPENAI_LANGUAGE_MODEL", "gpt-4o")
 
 # Agent Configuration
 MAX_ROUNDS = int(os.getenv("MAX_ROUNDS", "20"))

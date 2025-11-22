@@ -68,6 +68,15 @@ class BrowserState:
         self.is_initialized = False
         print("✅ Browser cleaned up")
 
+    def get_current_page(self) -> Optional[Page]:
+        """Return the current active page (last opened one)"""
+        context = browser_state.page.context if browser_state.page else None
+        if context:
+            pages = context.pages
+            if pages:
+                return pages[-1]  # Return the most recently opened page
+        return browser_state.page  # fallback
+
 
 # Global browser instance
 browser_state = BrowserState()
@@ -116,20 +125,21 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
     
     try:
         # Record URL before click
-        url_before = browser_state.page.url
+        page = browser_state.get_current_page()
+        url_before = page.url
         
         # Determine which locator strategy to use
         if text:
             # Use text-based locator (more reliable)
             if exact:
-                elements = browser_state.page.get_by_text(text, exact=True)
+                elements = page.get_by_text(text, exact=True)
                 locator_desc = f"text (exact): '{text}'"
             else:
-                elements = browser_state.page.get_by_text(text, exact=False)
+                elements = page.get_by_text(text, exact=False)
                 locator_desc = f"text: '{text}'"
         else:
             # Use CSS selector
-            elements = browser_state.page.locator(selector)
+            elements = page.locator(selector)
             locator_desc = f"selector: {selector}"
         
         count = elements.count()
@@ -143,11 +153,11 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
             for i in range(count):
                 try:
                     element = elements.nth(i)
-                    url_before_click = browser_state.page.url
+                    url_before_click = page.url
                     
                     # Try to detect navigation and wait for it
                     try:
-                        with browser_state.page.expect_navigation(timeout=3000, wait_until="domcontentloaded"):
+                        with page.expect_navigation(timeout=3000, wait_until="domcontentloaded"):
                             element.click(timeout=5000)
                         # Navigation occurred - this is likely the right element
                         click_result = f"✅ Clicked element {i+1}/{count} with {locator_desc}"
@@ -155,7 +165,7 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
                     except Exception:
                         # Check if URL changed without navigation event
                         time.sleep(0.5)
-                        url_after = browser_state.page.url
+                        url_after = page.url
                         if url_after != url_before_click:
                             # URL changed, this was successful
                             click_result = f"✅ Clicked element {i+1}/{count} with {locator_desc}"
@@ -177,7 +187,7 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
         else:
             # Single element - try to detect and wait for navigation
             try:
-                with browser_state.page.expect_navigation(timeout=3000, wait_until="domcontentloaded"):
+                with page.expect_navigation(timeout=3000, wait_until="domcontentloaded"):
                     elements.click(timeout=5000)
                 click_result = f"✅ Clicked element with {locator_desc}"
             except Exception:
@@ -186,7 +196,7 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
                 click_result = f"✅ Clicked element with {locator_desc}"
         
         # Check if URL changed
-        url_after = browser_state.page.url
+        url_after = page.url
         if url_before != url_after:
             return f"{click_result} → Navigated to: {url_after}"
         else:
@@ -215,17 +225,18 @@ def type_into_element(selector: str, text: str, clear_first: bool = True) -> str
         return "❌ Browser not initialized. Call goto() first."
     
     try:
+        page = browser_state.get_current_page()
         # Wait longer for the element to be available
-        browser_state.page.wait_for_selector(selector, timeout=10000, state="visible")
+        page.wait_for_selector(selector, timeout=10000, state="visible")
         
         # Focus on the element (this replaces the need for clicking)
-        browser_state.page.focus(selector)
+        page.focus(selector)
         
         if clear_first:
-            browser_state.page.fill(selector, "")
+            page.fill(selector, "")
         
         # Type the text
-        browser_state.page.type(selector, text, delay=50)  # Add small delay between keystrokes
+        page.type(selector, text, delay=50)  # Add small delay between keystrokes
         return f"✅ Typed '{text}' into {selector}"
     except Exception as e:
         return f"❌ Failed to type into {selector}: {str(e)}"
@@ -243,21 +254,22 @@ def press_keyboard_key(key: str) -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        url_before = browser_state.page.url
+        page = browser_state.get_current_page()
+        url_before = page.url
         
         # Try to detect navigation and wait for it (e.g., pressing Enter on a form)
         try:
-            with browser_state.page.expect_navigation(timeout=3000, wait_until="domcontentloaded"):
-                browser_state.page.keyboard.press(key)
+            with page.expect_navigation(timeout=3000, wait_until="domcontentloaded"):
+                page.keyboard.press(key)
             # Navigation occurred
-            url_after = browser_state.page.url
+            url_after = page.url
             if url_before != url_after:
                 return f"✅ Pressed key: {key} → Navigated to: {url_after}"
             else:
                 return f"✅ Pressed key: {key} (Page reloaded)"
         except Exception:
             # No navigation occurred, that's fine
-            url_after = browser_state.page.url
+            url_after = page.url
             if url_before != url_after:
                 return f"✅ Pressed key: {key} → URL changed to: {url_after}"
             else:
@@ -281,14 +293,15 @@ def scroll_page(direction: str = "down", amount: int = 500) -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
+        page = browser_state.get_current_page()
         if direction == "down":
-            browser_state.page.evaluate(f"window.scrollBy(0, {amount})")
+            page.evaluate(f"window.scrollBy(0, {amount})")
         elif direction == "up":
-            browser_state.page.evaluate(f"window.scrollBy(0, -{amount})")
+            page.evaluate(f"window.scrollBy(0, -{amount})")
         elif direction == "right":
-            browser_state.page.evaluate(f"window.scrollBy({amount}, 0)")
+            page.evaluate(f"window.scrollBy({amount}, 0)")
         elif direction == "left":
-            browser_state.page.evaluate(f"window.scrollBy(-{amount}, 0)")
+            page.evaluate(f"window.scrollBy(-{amount}, 0)")
         else:
             return f"❌ Invalid direction: {direction}"
         

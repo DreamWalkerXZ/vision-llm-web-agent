@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional
 from .vllm_client import VLLMClient
 from .tools import get_tool_registry
 from .config.settings import ARTIFACTS_DIR
+from .tools.dom_analyzer import semantic_dom_analyzer
 
 
 class Agent:
@@ -62,6 +63,7 @@ class Agent:
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.session_active = False
         self.round_counter = 0
+        self.next_step = ""
         
         # Create artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -291,15 +293,33 @@ class Agent:
         except Exception as e:
             print(f"   ⚠️  Screenshot failed: {e}")
         
+        dom_analysis = None
         try:
             registry = self.get_tool_registry()
             dom_func = registry.get_tool("dom_summary")
             if dom_func:
-                dom = dom_func(max_elements=150)  # Increased to capture more elements
-                print(f"   ✅ DOM extracted ({len(dom)} chars)")
+                next_step = self.next_step if self.next_step else self.history[0]['content']
+                dom_analysis = dom_func(self.vllm.client, next_step, self.vllm.language_model, max_elements=5)
+                if isinstance(dom_analysis, str):
+                    print(dom_analysis)
+                dom = dom_analysis.get("llm_text")
+                print(f"   ✅ DOM extracted ({len(dom_analysis)} chars)")
+                
+                # Annotate screenshot with element numbers if we have both
+                if screenshot_available and dom_analysis.get('filtered_elements'):
+                    annotated_path = str(self.artifacts_dir / f"{self.session_id}_step_{round_num:03d}_annotated.png")
+                    annotation_result = semantic_dom_analyzer.annotate_screenshot(
+                        screenshot_path, 
+                        dom_analysis['filtered_elements'],
+                        output_path=annotated_path
+                    )
+                    print(f"   {annotation_result}")
+                    # Use annotated screenshot for VLLM
+                    if Path(annotated_path).exists():
+                        screenshot_path = annotated_path
             else:
                 dom = "DOM tool not available"
-                print("   ⚠️  DOM tool not available")
+                print("   ⚠️  DOM analysis returned None or invalid type")
         except Exception as e:
             dom = "Failed to extract DOM"
             print(f"   ⚠️  DOM extraction failed: {e}")
@@ -308,7 +328,7 @@ class Agent:
         print("🤔 VLLM planning next action...")
         state_info = {
             "screenshot": screenshot_path if screenshot_available else None,
-            "dom": dom[:2000],  # Limit DOM length
+            "dom": dom,
             "round": round_num,
             "screenshot_available": screenshot_available
         }
@@ -329,6 +349,12 @@ class Agent:
         # Log thought
         if response.get("thought"):
             print(f"💭 Thought: {response['thought']}")
+        
+        if response.get("next"):
+            self.next_step = response["next"]
+            print(f"➡️  Next step set for DOM analysis: {self.next_step}")
+        else:
+            self.next_step = ""
         
         # 3. Check if task is complete
         if response.get("is_complete"):
@@ -399,7 +425,8 @@ class Agent:
             assistant_tool_call = {
                 "thought": response.get("thought", ""),
                 "tool": tool_name,
-                "parameters": parameters
+                "parameters": parameters,
+                "next": self.next_step
             }
             self.history.append({
                 "role": "assistant",
