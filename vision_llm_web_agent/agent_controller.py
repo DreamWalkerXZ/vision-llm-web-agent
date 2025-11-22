@@ -293,35 +293,48 @@ class Agent:
         except Exception as e:
             print(f"   ⚠️  Screenshot failed: {e}")
         
+        # Initialize dom variable before try block to ensure it's always defined
+        dom = "DOM not available"
         dom_analysis = None
+        
         try:
             registry = self.get_tool_registry()
             dom_func = registry.get_tool("dom_summary")
             if dom_func:
-                next_step = self.next_step if self.next_step else self.history[0]['content']
-                dom_analysis = dom_func(self.vllm.client, next_step, self.vllm.language_model, max_elements=5)
-                if isinstance(dom_analysis, str):
-                    print(dom_analysis)
-                dom = dom_analysis.get("llm_text")
-                print(f"   ✅ DOM extracted ({len(dom_analysis)} chars)")
+                # Get next_step or use first instruction, with safety check for empty history
+                next_step = self.next_step if self.next_step else (self.history[0]['content'] if self.history else "Analyze the page")
                 
-                # Annotate screenshot with element numbers if we have both
-                if screenshot_available and dom_analysis.get('filtered_elements'):
-                    annotated_path = str(self.artifacts_dir / f"{self.session_id}_step_{round_num:03d}_annotated.png")
-                    annotation_result = semantic_dom_analyzer.annotate_screenshot(
-                        screenshot_path, 
-                        dom_analysis['filtered_elements'],
-                        output_path=annotated_path
-                    )
-                    print(f"   {annotation_result}")
-                    # Use annotated screenshot for VLLM
-                    if Path(annotated_path).exists():
-                        screenshot_path = annotated_path
+                dom_analysis = dom_func(self.vllm.client, next_step, self.vllm.language_model, max_elements=5)
+                
+                # Handle error case where dom_analysis is a string
+                if isinstance(dom_analysis, str):
+                    dom = dom_analysis
+                    print(f"   ⚠️  DOM analysis returned error: {dom_analysis}")
+                elif isinstance(dom_analysis, dict):
+                    # Successfully got DOM analysis dictionary
+                    dom = dom_analysis.get("llm_text", "No DOM text available")
+                    print(f"   ✅ DOM extracted ({len(dom)} chars)")
+                    
+                    # Annotate screenshot with element numbers if we have both
+                    if screenshot_available and dom_analysis.get('filtered_elements'):
+                        annotated_path = str(self.artifacts_dir / f"{self.session_id}_step_{round_num:03d}_annotated.png")
+                        annotation_result = semantic_dom_analyzer.annotate_screenshot(
+                            screenshot_path, 
+                            dom_analysis['filtered_elements'],
+                            output_path=annotated_path
+                        )
+                        print(f"   {annotation_result}")
+                        # Use annotated screenshot for VLLM
+                        if Path(annotated_path).exists():
+                            screenshot_path = annotated_path
+                else:
+                    dom = "DOM analysis returned unexpected type"
+                    print(f"   ⚠️  DOM analysis returned unexpected type: {type(dom_analysis)}")
             else:
                 dom = "DOM tool not available"
-                print("   ⚠️  DOM analysis returned None or invalid type")
+                print("   ⚠️  DOM tool not available")
         except Exception as e:
-            dom = "Failed to extract DOM"
+            dom = f"Failed to extract DOM: {str(e)}"
             print(f"   ⚠️  DOM extraction failed: {e}")
         
         # 2. VLLM decides next action

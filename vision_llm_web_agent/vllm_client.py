@@ -260,8 +260,6 @@ When task is complete:
         # Add text description in JSON format
         dom_text = state_info.get('dom', 'N/A')
         round_num = state_info.get('round', 0)
-        print("===At vllm client===", f"\n📝 DOM Summary:")
-        print(dom_text)
         
         current_state_json = {
             "round": round_num,
