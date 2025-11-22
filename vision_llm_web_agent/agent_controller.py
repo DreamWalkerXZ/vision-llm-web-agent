@@ -60,6 +60,8 @@ class Agent:
         self.history: List[Dict[str, Any]] = []
         self.execution_log: List[Dict[str, Any]] = []
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_active = False
+        self.round_counter = 0
         
         # Create artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +71,41 @@ class Agent:
         print(f"   Max rounds: {max_rounds}")
         print(f"   Timeout per round: {timeout_per_round}s")
         print(f"   Artifacts dir: {artifacts_dir}")
+    
+    def _start_new_session(self, instruction: str):
+        """Initialize a new agent session with the first instruction."""
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.history = [{
+            "role": "user",
+            "content": instruction
+        }]
+        self.execution_log = []
+        self.round_counter = 0
+        self.session_active = True
+        
+        self._log_instruction(instruction, is_new_session=True)
+    
+    def _log_instruction(self, instruction: str, is_new_session: bool = False):
+        """Record the user instruction in the execution log."""
+        entry = {
+            "round": self.round_counter,
+            "action": "instruction",
+            "instruction": instruction,
+            "is_new_session": is_new_session,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.execution_log.append(entry)
+        self.save_execution_log()
+    
+    def end_session(self):
+        """Manually end the current session and clean up browser resources."""
+        registry = self.get_tool_registry()
+        close_browser_func = registry.get_tool("close_browser")
+        if close_browser_func:
+            close_browser_func()
+        self.session_active = False
+        self.round_counter = 0
+        print("👋 Session ended and browser closed.")
     
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         """
@@ -95,57 +132,86 @@ class Agent:
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
     
-    def execute(self, instruction: str) -> str:
+    def execute(
+        self,
+        instruction: str,
+        continue_session: bool = True,
+        close_browser: Optional[bool] = None
+    ) -> str:
         """
         Execute a user instruction through multi-round interaction.
         
         Args:
             instruction: Natural language instruction from user
+            continue_session: Whether to continue from an existing session
+            close_browser: Whether to close the browser after execution. Defaults
+                to False for continued sessions and True otherwise.
         
         Returns:
             Final answer or error message
         """
+        if close_browser is None:
+            close_browser = not continue_session
+        
+        if continue_session and not self.session_active:
+            print("⚠️  No active session found. Starting a new session instead.")
+            continue_session = False
+        
         print(f"\n{'='*80}")
-        print(f"🎯 Task: {instruction}")
+        if continue_session:
+            print(f"🔁 Follow-up Task: {instruction}")
+        else:
+            print(f"🎯 Task: {instruction}")
         print(f"{'='*80}\n")
         
-        # Initialize history with user instruction
-        self.history = [{
-            "role": "user",
-            "content": instruction
-        }]
+        if continue_session:
+            self.history.append({
+                "role": "user",
+                "content": instruction
+            })
+            self._log_instruction(instruction, is_new_session=False)
+        else:
+            if self.session_active and close_browser:
+                print("ℹ️  Ending previous session and starting a new one.")
+            self._start_new_session(instruction)
         
         start_time = time.time()
         
-        # Open browser to DuckDuckGo before first round
-        print("🌐 Opening browser to https://duckduckgo.com/...")
-        try:
-            registry = self.get_tool_registry()
-            goto_func = registry.get_tool("goto")
-            if goto_func:
-                result = goto_func("https://duckduckgo.com/")
-                print(f"   {result}")
-            else:
-                print("   ⚠️  goto tool not available")
-        except Exception as e:
-            print(f"   ⚠️  Failed to open browser: {e}")
+        if not continue_session:
+            # Open browser to DuckDuckGo before first round
+            # User-Agent is set in browser initialization to avoid detection
+            print("🌐 Opening browser to DuckDuckGo...")
+            try:
+                registry = self.get_tool_registry()
+                goto_func = registry.get_tool("goto")
+                if goto_func:
+                    result = goto_func("https://duckduckgo.com/")
+                    print(f"   {result}")
+                else:
+                    print("   ⚠️  goto tool not available")
+            except Exception as e:
+                print(f"   ⚠️  Failed to open browser: {e}")
+        else:
+            print("🌐 Continuing with existing browser session...")
         
         final_result = None
         final_status = None
         
         try:
-            for round_num in range(self.max_rounds):
+            for task_round in range(self.max_rounds):
+                current_round = self.round_counter
                 print(f"\n{'─'*80}")
-                print(f"🔄 Round {round_num + 1}/{self.max_rounds}")
+                print(f"🔄 Round {task_round + 1}/{self.max_rounds}")
                 print(f"{'─'*80}")
                 
                 # Execute one round
-                result = self.execute_round(round_num)
+                result = self.execute_round(current_round)
+                self.round_counter += 1
                 
                 if result["is_complete"]:
                     elapsed = time.time() - start_time
                     print(f"\n{'='*80}")
-                    print(f"✅ Task completed in {elapsed:.1f}s ({round_num + 1} rounds)")
+                    print(f"✅ Task completed in {elapsed:.1f}s ({task_round + 1} rounds total)")
                     print(f"{'='*80}")
                     print(f"\n{result['final_answer']}")
                     
@@ -155,7 +221,7 @@ class Agent:
                 
                 # Check for errors
                 if result.get("error"):
-                    print(f"⚠️  Error in round {round_num + 1}: {result['error']}")
+                    print(f"⚠️  Error in round {task_round + 1}: {result['error']}")
                     # Continue to next round to let VLLM recover
             
             # Max rounds reached
@@ -181,10 +247,13 @@ class Agent:
                 self.generate_final_interpretation(instruction, final_result, final_status or "unknown")
             
             # Clean up browser
-            registry = self.get_tool_registry()
-            close_browser_func = registry.get_tool("close_browser")
-            if close_browser_func:
-                close_browser_func()
+            if close_browser:
+                registry = self.get_tool_registry()
+                close_browser_func = registry.get_tool("close_browser")
+                if close_browser_func:
+                    close_browser_func()
+                self.session_active = False
+                self.round_counter = 0
         
         return final_result or "Task execution ended unexpectedly."
     
@@ -202,7 +271,8 @@ class Agent:
         
         # 1. Get current state (screenshot + DOM)
         print("📸 Capturing current state...")
-        screenshot_path = str(self.artifacts_dir / f"step_{round_num:02d}.png")
+        screenshot_filename = f"{self.session_id}_step_{round_num:03d}.png"
+        screenshot_path = str(self.artifacts_dir / screenshot_filename)
         screenshot_available = False
         
         try:
@@ -379,7 +449,7 @@ class Agent:
             "timestamp": datetime.now().isoformat(),
             "history": self.history,
             "execution_log": self.execution_log,
-            "total_rounds": len(self.execution_log)
+            "total_rounds": self.round_counter
         }
         
         with open(log_path, "w", encoding="utf-8") as f:
@@ -478,7 +548,7 @@ Write in a clear, structured format suitable for documentation."""
                     "file_name": file_name
                 })
                 
-                print(f"   ✅ {result}")
+                print(f"   {result}")
                 return file_name
                 
             except Exception as e:

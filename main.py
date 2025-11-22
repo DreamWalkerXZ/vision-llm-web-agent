@@ -81,24 +81,44 @@ def main():
         task = example_tasks[0]
         print(f"Using example task: {task}")
     
-    # Execute task
+    # Execute task with interactive session loop
+    import time
+    session_start_time = time.time()
+    tasks_completed = 0
+    
     try:
-        result = agent.execute(task)
+        # Execute first task (start new session)
+        result = agent.execute(task, continue_session=False, close_browser=False)
         
         print("\n" + "="*80)
-        print("📊 FINAL RESULT")
+        print("📊 RESULT")
         print("="*80)
         print(result)
         print()
+        tasks_completed += 1
         
-        # Show artifacts
-        artifacts = list(ARTIFACTS_DIR.glob("*"))
-        if artifacts:
-            print(f"\n📁 Generated {len(artifacts)} artifacts in {ARTIFACTS_DIR}/")
-            recent = sorted(artifacts, key=lambda p: p.stat().st_mtime, reverse=True)[:5]
-            for artifact in recent:
-                size = artifact.stat().st_size
-                print(f"   - {artifact.name} ({size} bytes)")
+        # Interactive loop for follow-up tasks
+        while True:
+            print("\n" + "="*80)
+            next_task = input("Enter next task (or 'quit'/'exit' to end session): ").strip()
+            
+            if next_task.lower() in ['quit', 'exit', 'q']:
+                print("Ending session...")
+                break
+            
+            if not next_task:
+                print("⚠️  Please enter a task or 'quit' to exit")
+                continue
+            
+            # Execute follow-up task (continue session)
+            result = agent.execute(next_task, continue_session=True, close_browser=False)
+            
+            print("\n" + "="*80)
+            print("📊 RESULT")
+            print("="*80)
+            print(result)
+            print()
+            tasks_completed += 1
     
     except KeyboardInterrupt:
         print("\n\n⚠️  Task interrupted by user")
@@ -106,6 +126,29 @@ def main():
         print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        # Clean up and show session statistics
+        session_duration = time.time() - session_start_time
+        
+        print("\n" + "="*80)
+        print("📊 SESSION SUMMARY")
+        print("="*80)
+        print(f"Session ID: {agent.session_id}")
+        print(f"Tasks completed: {tasks_completed}")
+        print(f"Total rounds: {agent.round_counter}")
+        print(f"Session duration: {session_duration:.1f}s")
+        
+        # Show artifacts
+        artifacts = list(ARTIFACTS_DIR.glob("*"))
+        if artifacts:
+            print(f"\nGenerated {len(artifacts)} artifacts in {ARTIFACTS_DIR}/")
+            recent = sorted(artifacts, key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+            for artifact in recent:
+                size = artifact.stat().st_size
+                print(f"   - {artifact.name} ({size:,} bytes)")
+        
+        # End session and close browser
+        agent.end_session()
     
     print("\n" + "="*80)
     print("👋 Thank you for using Vision-LLM Web Agent!")
