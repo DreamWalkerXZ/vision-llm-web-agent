@@ -195,11 +195,13 @@ When task is complete:
 5. If there is a CAPTCHA, try another site, DO NOT try to solve the CAPTCHA.
 6. **Error Recovery:** If actions fail 2+ times, try different approaches - never repeat the exact same action more than 2 times
 7. Call download_pdf for pdf download.
-8. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
-9. Incase of opening a pdf link, always download the pdf using download_pdf tool and then consider using extract text/images using pdf_extract_text/pdf_extract_images tools on the pdf that you download to local.
-10. When you are required to generate  summaries or answers based on large text content, always use the pdf_extract_text tool to extract text from the pdf and then generate your summaries/answers based on the extracted text and generate a file.
-**Preferences:**
-1. Prefer arXiv for academic and technical reports.
+8. Call pdf_extract_text/pdf_extract_images for pdf content extraction.
+9. Call save_image to save images.
+10. Call write_text to save text content.
+11. Call OCR tool for extracting text from images.
+12. Afer downloading a PDF, Always focus on extracting text/images from it before proceeding.
+12. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
+13. Prefer arXiv for academic and technical reports.
 """
         
         return prompt
@@ -522,6 +524,43 @@ When task is complete:
                 "error": f"Failed to parse JSON: {e}",
                 "raw_response": content
             }
+    
+    def summarize_text(self, text: str, max_length: int = 500) -> str:
+        """
+        Generate a summary of the given text using the LLM.
+        
+        Args:
+            text: Text content to summarize
+            max_length: Maximum length of the summary in characters
+        
+        Returns:
+            Summary text
+        """
+        try:
+            # Truncate text if too long (to avoid token limits)
+            # Keep first 8000 characters for summarization
+            text_to_summarize = text[:8000] if len(text) > 8000 else text
+            
+            prompt = f"""Please provide a concise summary of the following text. 
+The summary should be clear, informative, and capture the main points.
+Keep it under {max_length} characters.
+
+Text to summarize:
+{text_to_summarize}
+
+Summary:"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=min(self.max_tokens, max_length // 2),  # Rough token estimate
+                temperature=0.3  # Lower temperature for more focused summaries
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            return summary
+        except Exception as e:
+            return f"❌ Failed to generate summary: {str(e)}"
     
     def test_connection(self) -> bool:
         """

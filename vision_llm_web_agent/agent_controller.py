@@ -89,11 +89,118 @@ class Agent:
         
         try:
             result = tool_func(**parameters)
-            return str(result)
+            result_str = str(result)
+            
+            # Auto-process PDF after successful download
+            if tool_name == "download_pdf" and "✅" in result_str:
+                file_name = parameters.get("file_name")
+                if file_name:
+                    print(f"\n📄 Auto-processing PDF: {file_name}")
+                    self._auto_process_pdf(file_name)
+            
+            return result_str
         except TypeError as e:
             return f"❌ Invalid parameters for {tool_name}: {e}"
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
+    
+    def _auto_process_pdf(self, file_name: str):
+        """
+        Automatically process a downloaded PDF: extract text, extract images, 
+        perform OCR on images, and generate summary.
+        
+        Args:
+            file_name: Name of the PDF file (filename only, e.g., 'abc.pdf')
+        """
+        registry = self.get_tool_registry()
+        results = []
+        
+        try:
+            # 1. Extract text from PDF
+            print(f"   📝 Step 1/4: Extracting text from PDF...")
+            extract_text_func = registry.get_tool("pdf_extract_text")
+            extracted_text_content = None
+            if extract_text_func:
+                text_result = extract_text_func(file_name=file_name)
+                results.append(f"Text extraction: {text_result[:200]}...")
+                
+                # Save extracted text to file (if extraction was successful)
+                if "❌" not in str(text_result):
+                    # Extract was successful, save the text
+                    write_text_func = registry.get_tool("write_text")
+                    if write_text_func:
+                        text_file_name = file_name.replace(".pdf", "_extracted_text.txt")
+                        write_text_func(content=str(text_result), file_name=text_file_name)
+                        results.append(f"✅ Text saved to: {text_file_name}")
+                        extracted_text_content = str(text_result)
+            else:
+                results.append("⚠️ pdf_extract_text tool not available")
+            
+            # 2. Extract images from PDF
+            print(f"   🖼️  Step 2/4: Extracting images from PDF...")
+            extract_images_func = registry.get_tool("pdf_extract_images")
+            if extract_images_func:
+                # Use a subdirectory for images
+                image_dir = file_name.replace(".pdf", "_images")
+                images_result = extract_images_func(file_name=file_name, output_dir=image_dir)
+                results.append(f"Images extraction: {images_result[:200]}...")
+                
+                # 3. Perform OCR on extracted images
+                if "✅" in str(images_result) or "Extracted" in str(images_result):
+                    print(f"   🔍 Step 3/4: Performing OCR on extracted images...")
+                    ocr_func = registry.get_tool("ocr_image_to_text")
+                    if ocr_func:
+                        # Find extracted images
+                        image_dir_path = self.artifacts_dir / image_dir
+                        if image_dir_path.exists():
+                            image_files = list(image_dir_path.glob("*.png")) + list(image_dir_path.glob("*.jpg")) + \
+                                         list(image_dir_path.glob("*.jpeg"))
+                            
+                            for img_file in image_files:
+                                # Use relative path from artifacts_dir for OCR function
+                                # The function expects filename relative to artifacts (e.g., "images/page_1_img_1.png")
+                                relative_img_path = str(img_file.relative_to(self.artifacts_dir))
+                                ocr_output_name = f"{image_dir}/{img_file.stem}_ocr.txt"
+                                ocr_result = ocr_func(
+                                    image_file_name=relative_img_path,
+                                    output_file_name=ocr_output_name
+                                )
+                                results.append(f"OCR for {img_file.name}: {ocr_result[:150]}...")
+                    else:
+                        results.append("⚠️ ocr_image_to_text tool not available")
+            else:
+                results.append("⚠️ pdf_extract_images tool not available")
+            
+            # 4. Generate summary
+            print(f"   📊 Step 4/4: Generating PDF summary...")
+            # Use extracted text for summarization (reuse from step 1 to avoid re-extraction)
+            if extracted_text_content:
+                try:
+                    # Generate summary using VLLM
+                    summary = self.vllm.summarize_text(extracted_text_content, max_length=1000)
+                    
+                    # Save summary to file
+                    write_text_func = registry.get_tool("write_text")
+                    if write_text_func:
+                        summary_file_name = file_name.replace(".pdf", "_summary.txt")
+                        write_text_func(content=summary, file_name=summary_file_name)
+                        results.append(f"✅ Summary generated and saved to: {summary_file_name}")
+                        results.append(f"Summary preview: {summary[:200]}...")
+                    else:
+                        results.append(f"Summary generated: {summary[:200]}...")
+                except Exception as e:
+                    results.append(f"⚠️ Failed to generate summary: {str(e)}")
+            else:
+                results.append("⚠️ No extracted text available for summarization")
+            
+            print(f"   ✅ Auto-processing completed: {len(results)} steps")
+            for result in results:
+                print(f"      - {result}")
+            
+        except Exception as e:
+            print(f"   ⚠️  Error during auto-processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def execute(self, instruction: str) -> str:
         """
@@ -123,7 +230,7 @@ class Agent:
             registry = self.get_tool_registry()
             goto_func = registry.get_tool("goto")
             if goto_func:
-                result = goto_func("https://www.google.com/search?sca_esv=d109efa35e6c2d6e&udm=2&fbs=AIIjpHybaGNnaZw_4TckIDK59Rtx7EmYoHRazOl26McMSIhENyiO40OXF-2AmuvvRc2crJUkHA811tAZAdGenfwW5sdCbc3M2kptmBz0_ocnl8B3KX5TVA74t1UZG-nT2ZLlNkhiVZnwffORGe1_AognTR0Mjk1pi-2sEQZ5UPWs-wFyAAV9PismTXphUPqgsXcX9nOgkkM3TVb201Gz_uEnkVR1LVdEIQ&q=duck+image&sa=X&ved=2ahUKEwiR5f_j2P2QAxWu1jgGHcOAPMcQtKgLegQIDhAB&biw=1536&bih=833&dpr=2")
+                result = goto_func("https://arxiv.org/abs/1706.03762")
                 print(f"   {result}")
             else:
                 print("   ⚠️  goto tool not available")
