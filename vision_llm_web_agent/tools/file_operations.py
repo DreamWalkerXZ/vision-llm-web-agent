@@ -16,41 +16,38 @@ from ..config.settings import ARTIFACTS_DIR
 
 def normalize_file_path(file_path: str, is_input: bool = False) -> str:
     """
-    Normalize file path to artifacts/filename format (single level, no nesting).
+    Normalize file path to artifacts directory (preserving subdirectories).
     
     Args:
-        file_path: File path provided by agent (should be just filename like "abc.pdf")
+        file_path: File path provided by agent
         is_input: If True, this is an input file path (for reading). If False, output path (for saving).
     
     Returns:
-        Normalized path in format "artifacts_dir/filename" (single level)
+        Normalized path in format "artifacts_dir/path" (preserving relative path structure)
     """
-    # Extract filename from any path format (remove all directory prefixes)
     path_obj = Path(file_path)
-    filename = path_obj.name
+    
+    # If absolute path, return as is
+    if path_obj.is_absolute():
+        return str(path_obj)
     
     # Get artifacts directory as string for comparison
     artifacts_dir_str = str(ARTIFACTS_DIR)
     
     # For input files, try to find in artifacts or current directory
     if is_input:
-        # Try artifacts_dir/filename first
-        artifacts_path = ARTIFACTS_DIR / filename
+        # Try artifacts_dir/path first (preserving subdirectories)
+        artifacts_path = ARTIFACTS_DIR / path_obj
         if artifacts_path.exists():
             return str(artifacts_path)
-        # Try original path as-is (might be absolute or relative with artifacts/)
+        # Try original path as-is
         if path_obj.exists():
             return str(path_obj)
-        # Try with artifacts_dir prefix if original path had it
-        if file_path.startswith(artifacts_dir_str + "/") or file_path.startswith("artifacts/"):
-            artifacts_path = Path(file_path)
-            if artifacts_path.exists():
-                return str(artifacts_path)
-        # Return artifacts_dir/filename as default (will fail if file doesn't exist)
+        # Return artifacts_dir/path as default (will fail if file doesn't exist)
         return str(artifacts_path)
     else:
-        # For output files, always use artifacts_dir/filename (single level, no nesting)
-        return str(ARTIFACTS_DIR / filename)
+        # For output files, always use artifacts_dir/path (preserving subdirectories)
+        return str(ARTIFACTS_DIR / path_obj)
 
 
 @tool(
@@ -165,13 +162,15 @@ def extract_pdf_text(file_name: str, page_num: Optional[int] = None) -> str:
 def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] = None) -> str:
     """Extract images from a PDF file"""
     try:
-        # Normalize PDF path to artifacts/filename (single level)
+        # Normalize PDF path to artifacts/path
         pdf_path = normalize_file_path(file_name, is_input=True)
         
-        # For output directory, extract just the name and use artifacts_dir/dirname
+        # For output directory, preserve relative path structure
         output_dir_obj = Path(output_dir)
-        dirname = output_dir_obj.name if output_dir_obj.name else output_dir
-        output_dir = str(ARTIFACTS_DIR / dirname)
+        if not output_dir_obj.is_absolute():
+            output_dir = str(ARTIFACTS_DIR / output_dir_obj)
+        else:
+            output_dir = str(output_dir_obj)
         
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         

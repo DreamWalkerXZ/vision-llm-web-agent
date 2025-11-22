@@ -22,12 +22,11 @@ def take_screenshot(file_name: str = "screenshot.png") -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        # Normalize path to artifacts_dir/filename (single level)
+        # Normalize path to artifacts_dir/path (preserve subdirectories)
         save_path_obj = Path(file_name)
         if not save_path_obj.is_absolute():
-            # Extract filename and use artifacts_dir
-            filename = save_path_obj.name
-            save_path_obj = ARTIFACTS_DIR / filename
+            # Use artifacts_dir as base, preserving relative path structure
+            save_path_obj = ARTIFACTS_DIR / save_path_obj
         save_path = str(save_path_obj)
         
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
