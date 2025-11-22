@@ -181,7 +181,7 @@ class SemanticDOMAnalyzer:
         )
         for tag in input_elements:
             if(len(input_elements[tag])<=max_elements):
-                print(f"✅ Selected all <{tag}> elements because count {len(input_elements[tag])} <= {max_elements}")
+                # print(f"✅ Selected all <{tag}> elements because count {len(input_elements[tag])} <= {max_elements}")
                 filtered_elements.extend(all_elements[tag])
                 continue
             input_prompt = "\n".join(input_elements[tag])
@@ -206,7 +206,7 @@ class SemanticDOMAnalyzer:
                     for num in num_list:
                         if 0 <= num < len(elems):
                             filtered_elements.append(all_elements[tag][num])
-                            print(f"✅ Selected <{tag}> element #{num}")
+                            # print(f"✅ Selected <{tag}> element #{num}")
                 except Exception as e:
                     print(f"Failed to parse index list: {e}")
         
