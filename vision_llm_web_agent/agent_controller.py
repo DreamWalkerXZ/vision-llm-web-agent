@@ -54,21 +54,45 @@ class Agent:
         self.vllm = vllm_client
         self.max_rounds = max_rounds
         self.timeout_per_round = timeout_per_round
-        # Use settings.ARTIFACTS_DIR if not provided
-        self.artifacts_dir = Path(artifacts_dir) if artifacts_dir else ARTIFACTS_DIR
+        
+        # Generate session ID first
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create session-specific artifacts directory
+        # Each run gets its own subdirectory: artifacts/YYYYMMDD_HHMMSS/
+        base_artifacts_dir = Path(artifacts_dir) if artifacts_dir else ARTIFACTS_DIR
+        self.artifacts_dir = base_artifacts_dir / self.session_id
+        
+        # Set the session artifacts directory globally so tools can access it
+        from .config.settings import set_session_artifacts_dir
+        set_session_artifacts_dir(self.artifacts_dir)
         
         self.history: List[Dict[str, Any]] = []
         self.execution_log: List[Dict[str, Any]] = []
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Create artifacts directory
+        # Context mode: 'web_browsing' or 'local_file_processing'
+        self.context_mode = "web_browsing"
+        self.downloaded_pdf_files: List[str] = []  # Track downloaded PDFs
+        self.extracted_images: List[str] = []  # Track extracted image paths (relative to artifacts/)
+        self.original_instruction: str = ""  # Store original task for multi-step detection
+        
+        # Track recent failed actions to detect loops
+        self.recent_failures: List[Dict[str, Any]] = []  # List of recent failed tool calls
+        self.recent_tool_calls: List[Dict[str, Any]] = []  # Track recent tool calls to detect repetition
+        self.max_recent_calls = 5  # Track last 5 tool calls
+        self.max_failure_history = 10  # Keep last 10 failures
+        self.repeated_failure_threshold = 3  # If same action fails 3 times, force intervention
+        self.force_dom_summary_threshold = 5  # If same action fails 5 times, force dom_summary call
+        self.blocked_actions: Dict[str, int] = {}  # Track blocked actions: {action_key: failure_count}
+        
+        # Create session-specific artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         
         print("🤖 Web Agent initialized")
         print(f"   Session ID: {self.session_id}")
         print(f"   Max rounds: {max_rounds}")
         print(f"   Timeout per round: {timeout_per_round}s")
-        print(f"   Artifacts dir: {artifacts_dir}")
+        print(f"   Artifacts dir: {self.artifacts_dir}")
     
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         """
@@ -88,12 +112,52 @@ class Agent:
             return f"❌ Unknown tool: {tool_name}"
         
         try:
+            # Block download_pdf if already in local_file_processing mode
+            if tool_name == "download_pdf" and self.context_mode == "local_file_processing":
+                if self.downloaded_pdf_files:
+                    return f"⚠️ PDF already downloaded! You are in LOCAL FILE PROCESSING mode. Available files: {', '.join(self.downloaded_pdf_files)}. Use pdf_extract_text/pdf_extract_images tools to process the existing PDF. DO NOT download again!"
+                else:
+                    # Allow download if no files tracked (edge case)
+                    pass
+            
             result = tool_func(**parameters)
-            return str(result)
+            result_str = str(result)
+            
+            # Switch to local file processing mode after successful PDF download
+            if tool_name == "download_pdf" and "✅" in result_str:
+                file_name = parameters.get("file_name")
+                if file_name:
+                    # Check if file already exists in the list
+                    if file_name not in self.downloaded_pdf_files:
+                        self.downloaded_pdf_files.append(file_name)
+                    # Switch context mode
+                    self.context_mode = "local_file_processing"
+                    print(f"\n📄 PDF downloaded: {file_name}")
+                    print(f"🔄 Context switched to: local_file_processing mode")
+                    print(f"   💡 VLLM should now use pdf_extract_text/pdf_extract_images tools to process the local file")
+                    print(f"   ⚠️  DO NOT download PDF again - use the existing file!")
+                    
+                    # Add context switch message to history with multi-step task reminder
+                    context_switch_msg = {
+                        "role": "user",
+                        "content": json.dumps({
+                            "tool_execution": "download_pdf",
+                            "result": result_str,
+                            "context_switch": {
+                                "mode": "local_file_processing",
+                                "message": f"PDF file '{file_name}' has been successfully downloaded to local artifacts directory. You should now use local file processing tools (pdf_extract_text, pdf_extract_images, ocr_image_to_text, save_image, write_text) to process this file. These tools work on local files and do NOT require web browser operations. Ignore any screenshot/DOM information when processing local files.",
+                                "available_local_files": self.downloaded_pdf_files
+                            }
+                        })
+                    }
+                    self.history.append(context_switch_msg)
+            
+            return result_str
         except TypeError as e:
             return f"❌ Invalid parameters for {tool_name}: {e}"
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
+    
     
     def execute(self, instruction: str) -> str:
         """
@@ -115,10 +179,16 @@ class Agent:
             "content": instruction
         }]
         
+        # Store original instruction for multi-step task detection
+        self.original_instruction = instruction
+        
+        # Store original instruction for multi-step task detection
+        self.original_instruction = instruction
+        
         start_time = time.time()
         
         # Open browser to DuckDuckGo before first round
-        print("🌐 Opening browser to https://duckduckgo.com/...")
+        print("🌐 Opening browser to attention")
         try:
             registry = self.get_tool_registry()
             goto_func = registry.get_tool("goto")
@@ -234,14 +304,113 @@ class Agent:
             dom = "Failed to extract DOM"
             print(f"   ⚠️  DOM extraction failed: {e}")
         
-        # 2. VLLM decides next action
+        # 2. Check for blocked actions and force dom_summary if needed
+        if self.context_mode == "web_browsing" and self.blocked_actions:
+            # Check if we need to force dom_summary
+            for action_key, failure_count in self.blocked_actions.items():
+                if failure_count >= self.force_dom_summary_threshold:
+                    print(f"\n🚨 FORCING DOM SUMMARY: Action '{action_key}' has failed {failure_count} times")
+                    print(f"   🔍 Automatically calling dom_summary to find correct selector...")
+                    try:
+                        registry = self.get_tool_registry()
+                        dom_func = registry.get_tool("dom_summary")
+                        if dom_func:
+                            dom_result = dom_func(max_elements=150)
+                            # Add forced dom_summary result to history
+                            forced_dom_msg = {
+                                "role": "user",
+                                "content": f"🚨 FORCED ACTION: dom_summary was automatically called because '{action_key}' has failed {failure_count} times. Here is the DOM summary:\n{dom_result}\n\nYou MUST use the selectors from the INPUT FIELDS section above. DO NOT repeat the blocked action!"
+                            }
+                            self.history.append(forced_dom_msg)
+                            print(f"   ✅ Forced dom_summary completed and added to history")
+                            # Update dom in state_info
+                            if "dom" in locals():
+                                dom = dom_result
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to force dom_summary: {e}")
+        
+        # 3. VLLM decides next action
         print("🤔 VLLM planning next action...")
-        state_info = {
-            "screenshot": screenshot_path if screenshot_available else None,
-            "dom": dom[:2000],  # Limit DOM length
-            "round": round_num,
-            "screenshot_available": screenshot_available
-        }
+        
+        # Adjust state info based on context mode
+        if self.context_mode == "local_file_processing":
+            # Build instruction based on original task to remind about multi-step tasks
+            multi_step_reminder = ""
+            if self.original_instruction:
+                original_lower = self.original_instruction.lower()
+                if "save all" in original_lower:
+                    multi_step_reminder = "\n\n**🚨 CRITICAL - MULTI-STEP TASK DETECTED:**\nYour original task requires multiple steps. You MUST complete ALL steps before marking as complete:\n1. **FIRST:** Extract ALL images with pdf_extract_images(file_name=\"report.pdf\", output_dir=\"extracted_images\") WITHOUT page_num\n2. **SECOND:** Save all extracted images using save_image for each image\n3. **THIRD:** Find and interpret the first image (if task says 'interpret the first image')\n4. **ONLY THEN:** Mark status as \"complete\" after ALL steps are done!\n\n**DO NOT skip steps!** Check your original task requirements carefully!"
+            
+            # In local file processing mode, screenshot/DOM are not relevant
+            state_info = {
+                "context_mode": "local_file_processing",
+                "screenshot": None,
+                "dom": "N/A - Currently processing local files, web browser context not relevant",
+                "round": round_num,
+                "screenshot_available": False,
+                "available_local_files": self.downloaded_pdf_files,
+                "extracted_images": self.extracted_images,  # Add extracted images for VLLM visualization
+                "instruction": f"You are currently in LOCAL FILE PROCESSING mode. Use pdf_extract_text, pdf_extract_images, save_image, write_text, and ocr_image_to_text tools to process the downloaded PDF files. These tools work on local files in the artifacts/ directory. Do NOT use web browser tools (click, type_text, etc.) in this mode. DO NOT download PDF again - it's already downloaded!{multi_step_reminder}"
+            }
+            print(f"   📁 Context: Local file processing mode (available files: {self.downloaded_pdf_files})")
+            if self.extracted_images:
+                print(f"   🖼️  Extracted images available for visualization: {len(self.extracted_images)} images")
+        else:
+            # Normal web browsing mode
+            # Check if current page is a PDF
+            is_pdf_page = False
+            pdf_url = None
+            try:
+                registry = self.get_tool_registry()
+                # Get current URL from browser state
+                from .tools.browser_control import browser_state
+                if browser_state.is_initialized:
+                    current_url = browser_state.page.url
+                    # Check if URL indicates PDF
+                    if current_url.lower().endswith('.pdf') or '/pdf' in current_url.lower() or 'application/pdf' in current_url.lower():
+                        is_pdf_page = True
+                        pdf_url = current_url
+            except Exception:
+                pass
+            
+            # Smart DOM truncation: prioritize INPUT FIELDS section
+            # If DOM is too long, try to keep INPUT FIELDS section intact
+            dom_text = dom
+            if len(dom) > 3000:  # Increased limit from 2000 to 3000
+                # Try to find and preserve INPUT FIELDS section
+                if "📝 INPUT FIELDS:" in dom:
+                    input_start = dom.find("📝 INPUT FIELDS:")
+                    # Find the end of INPUT FIELDS section (next major section)
+                    input_end_markers = ["📋 FORMS:", "🔘 BUTTONS:", "🔗 LINKS:", "📋 DROPDOWNS:"]
+                    input_end = len(dom)
+                    for marker in input_end_markers:
+                        marker_pos = dom.find(marker, input_start)
+                        if marker_pos != -1 and marker_pos < input_end:
+                            input_end = marker_pos
+                    
+                    # Keep INPUT FIELDS section + first 2000 chars before it + remaining space after
+                    input_section = dom[input_start:input_end]
+                    before_input = dom[:input_start][-1000:]  # Last 1000 chars before INPUT FIELDS
+                    after_input = dom[input_end:][:1000]  # First 1000 chars after INPUT FIELDS
+                    dom_text = before_input + "\n" + input_section + "\n" + after_input
+                else:
+                    # No INPUT FIELDS found, just truncate normally
+                    dom_text = dom[:3000]
+            
+            state_info = {
+                "context_mode": "web_browsing",
+                "screenshot": screenshot_path if screenshot_available else None,
+                "dom": dom_text,
+                "round": round_num,
+                "screenshot_available": screenshot_available,
+                "instruction": "Analyze the current state and decide the next action. Respond with valid JSON."
+            }
+            
+            # Add PDF detection warning if PDF page detected
+            if is_pdf_page:
+                state_info["pdf_detected"] = True
+                state_info["pdf_url"] = pdf_url
+                state_info["instruction"] = f"🚨 CRITICAL: PDF PAGE DETECTED! The current page is a PDF file (URL: {pdf_url}). You MUST download it using download_pdf(url=\"{pdf_url}\", file_name=\"report.pdf\") before processing. DO NOT try to scroll or interact with the PDF in the browser - download it first!"
         
         try:
             response = self.vllm.plan_next_action(
@@ -323,6 +492,64 @@ class Agent:
             tool_name = tool_call["name"]
             parameters = tool_call.get("params", {})
             
+            # Check for repeated tool calls (same tool with same parameters)
+            current_call_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
+            recent_same_calls = [call for call in self.recent_tool_calls if call.get("key") == current_call_key]
+            
+            if len(recent_same_calls) >= 2:  # If same call appears 2+ times in recent history
+                print(f"\n⚠️  DETECTED REPEATED TOOL CALL: {tool_name} with same parameters called {len(recent_same_calls) + 1} times")
+                print(f"   This might indicate the VLLM is stuck. Adding intervention message...")
+                
+                # Add intervention message
+                intervention_msg = {
+                    "role": "user",
+                    "content": f"⚠️ INTERVENTION: You have called '{tool_name}' with the same parameters {len(recent_same_calls) + 1} times. The result was already provided. You MUST proceed to the next step:\n"
+                }
+                
+                # Provide specific guidance based on tool
+                if tool_name == "pdf_extract_text":
+                    intervention_msg["content"] += "- If you extracted text to find Figure 1, check the FIGURE LOCATIONS SUMMARY and proceed to extract images.\n"
+                    intervention_msg["content"] += "- DO NOT extract text again - you already have the information you need!\n"
+                elif tool_name == "pdf_extract_images":
+                    intervention_msg["content"] += "- Images have been extracted. You MUST now save them using save_image or proceed to interpret them.\n"
+                    intervention_msg["content"] += "- DO NOT extract images again!\n"
+                
+                self.history.append(intervention_msg)
+                print(f"   ✅ Added intervention message to guide next action")
+            
+            # Track this tool call
+            self.recent_tool_calls.append({
+                "key": current_call_key,
+                "tool": tool_name,
+                "parameters": parameters,
+                "round": round_num
+            })
+            # Keep only recent calls
+            if len(self.recent_tool_calls) > self.max_recent_calls:
+                self.recent_tool_calls.pop(0)
+            
+            # Check if this action is blocked
+            original_tool_name = tool_name
+            original_parameters = parameters.copy()
+            if self.context_mode == "web_browsing" and tool_name in ["click", "type_text", "press_key"]:
+                action_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
+                if action_key in self.blocked_actions:
+                    failure_count = self.blocked_actions[action_key]
+                    if failure_count >= self.force_dom_summary_threshold:
+                        print(f"\n🚨 BLOCKED ACTION: '{action_key}' has failed {failure_count} times")
+                        print(f"   🔍 Automatically replacing with dom_summary call...")
+                        
+                        # Replace blocked action with dom_summary
+                        tool_name = "dom_summary"
+                        parameters = {"max_elements": 150}
+                        
+                        # Add blocking message to history BEFORE assistant's tool call
+                        blocking_msg = {
+                            "role": "user",
+                            "content": f"🚨 ACTION BLOCKED: Your requested action '{original_tool_name}' with parameters {json.dumps(original_parameters)} has been blocked because it has failed {failure_count} times. The system has automatically replaced it with a dom_summary call. You MUST use the selectors from the DOM summary result. DO NOT attempt the blocked action again!"
+                        }
+                        self.history.append(blocking_msg)
+            
             print(f"🔧 Executing: {tool_name}({json.dumps(parameters, indent=2)})")
             
             # First, add assistant's tool call decision to history
@@ -344,15 +571,111 @@ class Agent:
                 result = f"❌ Tool execution error: {e}"
                 print(f"   {result}")
             
+            # Track failed actions to detect loops
+            is_failure = "❌" in str(result) or "Failed" in str(result) or "error" in str(result).lower()
+            # Also track ineffective clicks (URL unchanged for submit buttons)
+            is_ineffective_click = (
+                tool_name == "click" and 
+                "Page URL unchanged" in str(result) and 
+                ("INEFFECTIVE CLICK" in str(result) or "search" in str(parameters.get("text", "")).lower() or "submit" in str(parameters.get("text", "")).lower())
+            )
+            repeated_failure_detected = False
+            same_failures_count = 0
+            
+            if is_failure or is_ineffective_click:
+                failure_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
+                self.recent_failures.append({
+                    "key": failure_key,
+                    "tool": tool_name,
+                    "parameters": parameters,
+                    "result": result,
+                    "round": round_num,
+                    "is_ineffective": is_ineffective_click
+                })
+                
+                # If it's an ineffective click, add a suggestion to use press_key("Enter")
+                if is_ineffective_click:
+                    print(f"\n⚠️  INEFFECTIVE CLICK DETECTED: Click on '{parameters.get('text', 'button')}' did not change URL")
+                    print(f"   💡 Suggestion: Use press_key(\"Enter\") in the input field instead of clicking the button")
+                # Keep only recent failures
+                if len(self.recent_failures) > self.max_failure_history:
+                    self.recent_failures = self.recent_failures[-self.max_failure_history:]
+                
+                # Check for repeated failures
+                same_failures = [f for f in self.recent_failures if f["key"] == failure_key]
+                same_failures_count = len(same_failures)
+                
+                # Update blocked actions
+                if self.context_mode == "web_browsing" and tool_name in ["click", "type_text", "press_key"]:
+                    self.blocked_actions[failure_key] = same_failures_count
+                
+                if same_failures_count >= self.repeated_failure_threshold:
+                    repeated_failure_detected = True
+                    print(f"\n⚠️  DETECTED REPEATED FAILURE: {tool_name} failed {same_failures_count} times with same parameters")
+                    
+                    # Force DOM summary if in web browsing mode and it's a browser interaction tool
+                    if self.context_mode == "web_browsing" and tool_name in ["click", "type_text", "press_key"]:
+                        if same_failures_count >= self.force_dom_summary_threshold:
+                            print(f"   🚨 CRITICAL: Action will be BLOCKED and replaced with dom_summary on next attempt")
+                        else:
+                            print(f"   🔍 Forcing DOM summary check to find correct selector...")
+                            # Add a special message to history to force VLLM to check DOM
+                            intervention_msg = {
+                                "role": "user",
+                                "content": f"⚠️ INTERVENTION: The action '{tool_name}' with parameters {json.dumps(parameters)} has failed {same_failures_count} times. You MUST call 'dom_summary' tool to find the correct selector before trying again. DO NOT repeat the same failed action! If this action fails {self.force_dom_summary_threshold} times, it will be automatically blocked."
+                            }
+                            self.history.append(intervention_msg)
+                            print(f"   ✅ Added intervention message to force DOM summary check")
+            
+            # Track extracted images for VLLM visualization
+            if tool_name == "pdf_extract_images" and "✅" in str(result):
+                # Parse extracted image paths from result
+                # Result format: "✅ Extracted N images to dir:\n  - path1\n  - path2..."
+                lines = str(result).split('\n')
+                new_images = []
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('- '):
+                        img_path = line[2:].strip()  # Remove "- " prefix
+                        # Clean up path (remove any extra whitespace or quotes)
+                        img_path = img_path.strip('"\'')
+                        if img_path and img_path not in self.extracted_images:
+                            self.extracted_images.append(img_path)
+                            new_images.append(img_path)
+                if new_images:
+                    print(f"   📸 Tracked {len(new_images)} new extracted images for VLLM visualization")
+                    print(f"      Total tracked images: {len(self.extracted_images)}")
+            
             # Add tool execution result as user message to history
+            # If there was a repeated failure, make it more prominent
             tool_result = {
                 "tool_execution": tool_name,
                 "result": result
             }
-            self.history.append({
-                "role": "user",
-                "content": json.dumps(tool_result, ensure_ascii=False, indent=2)
-            })
+            if repeated_failure_detected:
+                tool_result["⚠️ CRITICAL"] = f"This action has failed {same_failures_count} times. You MUST call 'dom_summary' tool NOW to find the correct selector. DO NOT repeat this action!"
+            
+            # Add context switch notification for PDF downloads
+            if tool_name == "download_pdf" and "✅" in str(result):
+                file_name = parameters.get("file_name")
+                context_notification = {
+                    "tool_execution": tool_name,
+                    "result": result,
+                    "context_switch": {
+                        "mode": "local_file_processing",
+                        "message": f"PDF file '{file_name}' has been successfully downloaded to local artifacts directory. You should now use local file processing tools (pdf_extract_text, pdf_extract_images, ocr_image_to_text) to process this file. These tools work on local files and do NOT require web browser operations. Ignore any screenshot/DOM information when processing local files.\n\n**IMPORTANT - For tasks requiring specific figures (e.g., 'interpret Figure 1'):**\n1. FIRST extract text from PDF (pdf_extract_text without page_num) to search for 'Figure 1' in the text and find which page it's on\n2. THEN extract images ONLY from that specific page (use page_num parameter)\n3. DO NOT extract images from page 1 or all pages before finding where Figure 1 is located!",
+                        "available_local_files": [file_name]
+                    }
+                }
+                self.history.append({
+                    "role": "user",
+                    "content": json.dumps(context_notification, ensure_ascii=False, indent=2)
+                })
+            else:
+                self.history.append({
+                    "role": "user",
+                    "content": json.dumps(tool_result, ensure_ascii=False, indent=2)
+                })
             
             # Log execution with VLLM raw data
             self.execution_log.append({

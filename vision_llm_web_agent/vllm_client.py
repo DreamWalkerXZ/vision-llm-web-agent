@@ -192,13 +192,86 @@ When task is complete:
 2. Call ONE tool at a time
 3. **CRITICAL: Trust DOM over screenshot** - If an element is not in dom_summary, it's NOT clickable, even if you see it in the screenshot
 4. Use specific CSS selectors for click/type actions
-5. If there is a CAPTCHA, try another site, DO NOT try to solve the CAPTCHA.
-6. **Error Recovery:** If actions fail 2+ times, try different approaches - never repeat the exact same action more than 2 times
-7. Call download_pdf for pdf download.
-8. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
-
-**Preferences:**
-1. Prefer arXiv for academic and technical reports.
+5. **IMPORTANT - Search Workflow & Form Submission - CRITICAL:** 
+   - **DO NOT** click the search box first - use type_text directly on the search input selector
+   - The type_text tool will automatically focus and clear the input field
+   - **For form submission (search, submit, etc.) - ALWAYS use this workflow:**
+     * **Step 1:** type_text(selector="...", text="your query")
+     * **Step 2:** press_key("Enter") in the input field - **DO NOT click the submit button first!**
+     * **Step 3:** Only if press_key("Enter") doesn't work, then try clicking the submit button
+   - **If you see "INEFFECTIVE CLICK" or "Page URL unchanged" after clicking a submit/search button:**
+     * **STOP clicking the button immediately!**
+     * **You MUST use press_key("Enter") in the input field instead**
+     * **The button click is not working - pressing Enter is the correct method for form submission**
+   - **NEVER click a submit/search button multiple times if the URL doesn't change - this is a sign the click is ineffective**
+   - Example: type_text(selector="textarea[name='q']", text="your search query") then press_key("Enter")
+   - **If selector fails**: Check DOM summary for INPUT FIELDS section - use the exact selector shown there (prefer id or name-based selectors like "#id_search_text" or "input[name='q']")
+6. If there is a CAPTCHA, try another site, DO NOT try to solve the CAPTCHA.
+7. **Error Recovery - CRITICAL:** 
+   - **If an action fails, DO NOT repeat it immediately with the same parameters!**
+   - **If the same action fails 2+ times, you MUST call 'dom_summary' tool to find the correct selector**
+   - **After checking DOM summary, use the selectors shown in the INPUT FIELDS section (prefer id or name-based selectors)**
+   - **Never repeat the exact same failed action more than 2 times without checking DOM summary first**
+   - If clicking fails, try using type_text directly instead
+   - If a selector fails, check the DOM summary for alternative selectors (id, name, placeholder attributes)
+   - **If you see an "⚠️ INTERVENTION" or "🚨 ACTION BLOCKED" message, you MUST follow its instructions immediately - these are system-level interventions that override your normal decision-making**
+   - **If an action is blocked, the system will automatically replace it with dom_summary - you MUST use the selectors from that result**
+7. **PDF Detection & Download - CRITICAL:**
+   - **If you see "🚨 PDF PAGE DETECTED" or the URL ends with .pdf:**
+     * **STOP all browser interactions immediately (no scrolling, no clicking)!**
+     * **You MUST download the PDF using download_pdf(url=\"current\", file_name=\"report.pdf\")**
+     * **The 'current' URL parameter will use the current page URL automatically**
+     * **DO NOT try to scroll or interact with PDF in browser - it won't work!**
+     * **After downloading, use pdf_extract_text/pdf_extract_images tools to process the local file**
+   - **If a button/link says "View PDF" or "PDF" and clicking it doesn't change URL:**
+     * The PDF might have opened in a new tab or the current page might be the PDF
+     * **Check the current URL - if it ends with .pdf or contains /pdf, download it immediately**
+     * **Use download_pdf(url=\"current\", file_name=\"report.pdf\") to download from current page**
+   - **For PDF links: Always use download_pdf tool instead of trying to view PDF in browser**
+   - **If you're on a PDF page and need to download it, use: download_pdf(url=\"current\", file_name=\"filename.pdf\")**
+8. Call pdf_extract_text/pdf_extract_images for pdf content extraction. **IMPORTANT:** 
+   - When extracting images, if a specific page has no images, try extracting from other pages or omit the page_num parameter to extract from all pages. The first image might not be on page 1.
+   - **CRITICAL - Image Interpretation Workflow:** 
+     * **After extracting images, they will be automatically shown to you in the current state. You can directly SEE and INTERPRET these images without needing OCR.**
+     * **DO NOT** perform OCR on all extracted images just to "see" or "understand" them - you can already see them directly!
+     * **Only use OCR if you need to extract text content FROM within an image** (e.g., text labels, captions, or text in diagrams)
+   - **For tasks like "interpret Figure 1" or "explain Figure X" - CRITICAL WORKFLOW:** 
+     * **Step 1 (MANDATORY):** Use pdf_extract_text with search_term="Figure 1" (or "Figure X") to quickly find which page contains the target figure. This is MUCH faster than extracting all text!
+     * **Step 2:** If search_term doesn't work, extract text from PDF WITHOUT page_num. The tool will automatically show a "FIGURE LOCATIONS SUMMARY" at the top listing which pages contain which figures.
+     * **Step 3:** Once you find the page number where "Figure 1" is mentioned, extract images ONLY from that specific page using page_num parameter (e.g., if Figure 1 is on page 5, use page_num=5)
+     * **Step 4:** The extracted images will be automatically shown to you - you can directly interpret them by describing what you see
+     * **Step 5 (OPTIONAL):** If the task requires saving images (e.g., "save all the images"), use save_image to copy specific images from extracted_images/ to the main artifacts directory with meaningful names (e.g., save_image(file_name="extracted_images/page_1_img_4.png", output_file_name="figure1.png"))
+     * **Step 6:** If the task is complete (e.g., you've interpreted Figure 1), mark status as "complete" - DO NOT continue extracting more images or performing OCR!
+     * **IMPORTANT:** DO NOT extract images from page 1 or all pages before finding where "Figure 1" is located! Always search text first using search_term parameter or check the FIGURE LOCATIONS SUMMARY.
+9. Call save_image to save or copy images. **IMPORTANT:**
+   - After extracting images from PDF using pdf_extract_images, you can use save_image to copy them to the main artifacts directory
+   - Use relative path for input (e.g., "extracted_images/page_1_img_1.png") and filename only for output (e.g., "figure1.png")
+   - Example: save_image(file_name="extracted_images/page_1_img_1.png", output_file_name="figure1.png")
+   - This is useful for saving specific figures (e.g., Figure 1) with meaningful names
+10. Call write_text to save text content.
+11. **IMPORTANT - Multi-Step Tasks (e.g., "save all the images, then interpret Figure 1"):**
+   - **CRITICAL:** When a task has multiple steps, you MUST complete ALL steps before marking as "complete"!
+   - **Step-by-step workflow for tasks like "save all images, interpret Figure 1":**
+     * **Step 1:** Extract ALL images from PDF (pdf_extract_images without page_num) to get all images from all pages
+     * **Step 2:** Save all extracted images to main directory using save_image (e.g., save_image(file_name="extracted_images/page_X_img_Y.png", output_file_name="figureX.png"))
+     * **Step 3:** Find and interpret the first image (use search_term="Figure 1" or check extracted images, then write interpretation using write_text)
+     * **Step 4:** Only mark as "complete" after ALL steps are done (all images saved, first image interpreted)
+   - **DO NOT skip steps!** If the task says "save all the images", you MUST extract and save ALL images, not just one!
+   - **Check the task requirements carefully:** Tasks with multiple steps require completing ALL actions - don't stop after just one!
+12. Call OCR tool for extracting text from images. **IMPORTANT:** 
+    - OCR is ONLY needed when you need to extract text content FROM within an image (e.g., text labels, captions, or text in diagrams)
+    - **DO NOT** use OCR just to "see" or "understand" an image - you can already see extracted images directly!
+    - When using ocr_image_to_text, provide the FULL relative path from artifacts/ directory (e.g., "extracted_images/page_3_img_1.png"), not just the filename.
+12. **CRITICAL - Context Modes:**
+    - **Web Browsing Mode (default):** Use browser tools (click, type_text, goto, etc.) based on screenshot and DOM. This is for navigating and interacting with web pages.
+    - **Local File Processing Mode:** When a PDF is successfully downloaded, the context switches to local file processing. In this mode:
+      * Screenshot and DOM information are NOT relevant - ignore them
+      * Use local file processing tools: pdf_extract_text, pdf_extract_images, ocr_image_to_text
+      * These tools work on files in the artifacts/ directory
+      * Do NOT use web browser tools in this mode
+      * After processing local files, you can switch back to web browsing if needed
+13. **File Paths:** For all file operations (download_pdf, pdf_extract_text, pdf_extract_images, save_image, write_text), provide ONLY the filename (e.g., "abc.pdf", "output.txt"), NOT directory paths. The system will automatically save files to artifacts/ directory in a single level (artifacts/filename).
+14. Prefer arXiv for academic and technical reports.
 """
         
         return prompt
@@ -235,11 +308,13 @@ When task is complete:
         # Add current state with vision input (if screenshot available)
         current_state_content = []
         
-        # Check if screenshot is available
+        # Check if screenshot is available and relevant
         screenshot_available = state_info.get('screenshot_available', False)
         screenshot_path = state_info.get('screenshot')
+        context_mode = state_info.get('context_mode', 'web_browsing')
         
-        if screenshot_available and screenshot_path:
+        # Only include screenshot if in web browsing mode
+        if screenshot_available and screenshot_path and context_mode == 'web_browsing':
             try:
                 # Add screenshot
                 current_state_content.append({
@@ -256,13 +331,68 @@ When task is complete:
         # Add text description in JSON format
         dom_text = state_info.get('dom', 'N/A')
         round_num = state_info.get('round', 0)
+        context_mode = state_info.get('context_mode', 'web_browsing')
         
         current_state_json = {
             "round": round_num,
+            "context_mode": context_mode,
             "screenshot_available": screenshot_available,
             "dom_summary": dom_text,
-            "instruction": "Analyze the current state and decide the next action. Respond with valid JSON."
+            "instruction": state_info.get('instruction', "Analyze the current state and decide the next action. Respond with valid JSON.")
         }
+        
+        # Add PDF detection warning if PDF page detected
+        if state_info.get('pdf_detected'):
+            current_state_json["pdf_detected"] = True
+            current_state_json["pdf_url"] = state_info.get('pdf_url', '')
+            # Make instruction more prominent
+            current_state_json["instruction"] = state_info.get('instruction', "🚨 PDF PAGE DETECTED! Download it using download_pdf(url=\"current\", file_name=\"report.pdf\")")
+        
+        # Add context-specific information
+        if context_mode == "local_file_processing":
+            current_state_json["available_local_files"] = state_info.get('available_local_files', [])
+            extracted_images = state_info.get('extracted_images', [])
+            current_state_json["extracted_images"] = extracted_images
+            current_state_json["note"] = "You are in LOCAL FILE PROCESSING mode. Use pdf_extract_text, pdf_extract_images, ocr_image_to_text tools. Ignore screenshot/DOM."
+            
+            # Add extracted images to VLLM input so it can "see" them
+            # Add images BEFORE text content so VLLM can see them first
+            # Limit to first 20 images to avoid overwhelming VLLM with too many images at once
+            MAX_IMAGES_TO_SHOW = 20
+            if extracted_images:
+                from .config.settings import get_session_artifacts_dir
+                session_artifacts_dir = get_session_artifacts_dir()
+                images_to_show = extracted_images[:MAX_IMAGES_TO_SHOW]
+                if len(extracted_images) > MAX_IMAGES_TO_SHOW:
+                    print(f"   ⚠️  Limiting to first {MAX_IMAGES_TO_SHOW} images (total: {len(extracted_images)})")
+                    current_state_json["note"] += f"\n⚠️ NOTE: Only showing first {MAX_IMAGES_TO_SHOW} of {len(extracted_images)} extracted images. If you need a specific image (e.g., Figure 1), extract images from the specific page instead of all pages."
+                
+                image_count = 0
+                for img_rel_path in images_to_show:
+                    try:
+                        # Handle both relative paths and full paths
+                        if Path(img_rel_path).is_absolute():
+                            img_full_path = Path(img_rel_path)
+                        else:
+                            img_full_path = session_artifacts_dir / img_rel_path
+                        
+                        if img_full_path.exists() and img_full_path.is_file():
+                            # Add image to current state content (before text)
+                            current_state_content.insert(image_count, {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": self.encode_image(str(img_full_path)),
+                                    "detail": "high"
+                                }
+                            })
+                            image_count += 1
+                            print(f"   🖼️  Added extracted image to VLLM input: {img_rel_path}")
+                        else:
+                            print(f"   ⚠️  Image file not found: {img_full_path}")
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to encode extracted image {img_rel_path}: {e}")
+                        import traceback
+                        traceback.print_exc()
         
         current_state_content.append({
             "type": "text",
@@ -521,6 +651,43 @@ When task is complete:
                 "error": f"Failed to parse JSON: {e}",
                 "raw_response": content
             }
+    
+    def summarize_text(self, text: str, max_length: int = 500) -> str:
+        """
+        Generate a summary of the given text using the LLM.
+        
+        Args:
+            text: Text content to summarize
+            max_length: Maximum length of the summary in characters
+        
+        Returns:
+            Summary text
+        """
+        try:
+            # Truncate text if too long (to avoid token limits)
+            # Keep first 8000 characters for summarization
+            text_to_summarize = text[:8000] if len(text) > 8000 else text
+            
+            prompt = f"""Please provide a concise summary of the following text. 
+The summary should be clear, informative, and capture the main points.
+Keep it under {max_length} characters.
+
+Text to summarize:
+{text_to_summarize}
+
+Summary:"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=min(self.max_tokens, max_length // 2),  # Rough token estimate
+                temperature=0.3  # Lower temperature for more focused summaries
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            return summary
+        except Exception as e:
+            return f"❌ Failed to generate summary: {str(e)}"
     
     def test_connection(self) -> bool:
         """

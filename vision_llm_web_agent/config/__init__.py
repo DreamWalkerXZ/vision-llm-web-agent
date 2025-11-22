@@ -14,7 +14,9 @@ from .settings import (
     BROWSER_HEADLESS,
     BROWSER_VIEWPORT_WIDTH,
     BROWSER_VIEWPORT_HEIGHT,
-    BROWSER_LOCALE
+    BROWSER_LOCALE,
+    set_session_artifacts_dir,
+    get_session_artifacts_dir
 )
 
 __all__ = [
@@ -29,5 +31,7 @@ __all__ = [
     "BROWSER_HEADLESS",
     "BROWSER_VIEWPORT_WIDTH",
     "BROWSER_VIEWPORT_HEIGHT",
-    "BROWSER_LOCALE"
+    "BROWSER_LOCALE",
+    "set_session_artifacts_dir",
+    "get_session_artifacts_dir"
 ]

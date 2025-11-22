@@ -11,9 +11,12 @@ from vision_llm_web_agent.tools.file_operations import (
     extract_pdf_text,
     extract_pdf_images,
     save_or_crop_image,
-    write_text_to_file
+    write_text_to_file,
+    ocr_image_to_text
 )
 from vision_llm_web_agent.tools.browser_control import browser_state
+from PIL import Image, ImageDraw,ImageFont
+import pytesseract
 
 
 @pytest.fixture
@@ -80,6 +83,34 @@ def sample_image(tmp_path):
     
     img.save(img_path)
     return img_path
+
+@pytest.fixture
+def sample_image_for_ocr(tmp_path):
+    """
+    创建一个包含可识别文本的图像，用于 OCR 测试。
+    注意：这需要系统安装了字体文件才能正确工作。
+    """
+    img_path = tmp_path / "ocr_test_image.png"
+    
+    # 创建一个白色背景的图像
+    img = Image.new('RGB', (400, 100), color='white')
+    draw = ImageDraw.Draw(img)
+    
+    test_text = "OCR Test: Hello World 123"
+    
+    # 尝试使用一个通用字体，如果找不到可能会失败
+    try:
+        # 尝试加载一个相对可靠的默认字体（可能需要调整路径或使用系统字体名称）
+        font = ImageFont.truetype("arial.ttf", 24)
+    except IOError:
+        # Fallback to default font if the specified one is not found
+        font = ImageFont.load_default()
+    
+    # 在图像上绘制文本
+    draw.text((10, 10), test_text, fill='black', font=font)
+    
+    img.save(img_path)
+    return img_path, test_text # 返回路径和预期的文本内容
 
 
 class TestDownloadPdfFile:
@@ -425,3 +456,84 @@ class TestFileOperationsIntegration:
         img = Image.open(full_final)
         assert img.size == (100, 100)
 
+
+
+
+class TestOcrImageToText:
+    """Test the ocr_image_to_text function"""
+    
+    def test_ocr_basic_success(self, sample_image_for_ocr, test_artifacts_dir):
+        """Test basic OCR and text saving"""
+        image_path, expected_text = sample_image_for_ocr
+        output_file_name = "test/ocr_result.txt"
+        
+        # 运行 OCR 工具
+        result = ocr_image_to_text(str(image_path), output_file_name)
+        
+        # 检查结果是否成功
+        assert "✅" in result, f"OCR failed or did not return success status: {result}"
+        
+        # 检查输出文件是否存在于 artifacts 目录中
+        full_output_path = Path("artifacts") / output_file_name
+        assert full_output_path.exists()
+        
+        # 读取内容并验证文本是否被识别（由于 OCR 准确性无法保证完美，我们检查内容长度和关键字）
+        extracted_content = full_output_path.read_text(encoding='utf-8').strip()
+        
+        # OCR 引擎可能会在文本中添加换行符或其他空格
+        assert len(extracted_content) > 10, "Extracted text is too short or empty."
+        assert "Hello World" in extracted_content, "Expected text 'Hello World' not found in OCR output."
+    
+    
+    def test_ocr_creates_directory(self, sample_image_for_ocr, test_artifacts_dir):
+        """Test that OCR output creates parent directories"""
+        image_path, _ = sample_image_for_ocr
+        output_file_name = "test/nested/ocr/output.txt"
+        
+        # 运行 OCR 工具
+        result = ocr_image_to_text(str(image_path), output_file_name)
+        
+        assert "✅" in result
+        
+        # 检查目录是否被创建
+        full_output_path = Path("artifacts") / output_file_name
+        assert full_output_path.parent.exists()
+        assert full_output_path.exists()
+        
+    
+    def test_ocr_nonexistent_image(self, test_artifacts_dir):
+        """Test OCR on a nonexistent image file"""
+        nonexistent_image = "nonexistent_ocr.png"
+        output_file_name = "test/ocr_fail.txt"
+        
+        # 运行 OCR 工具
+        result = ocr_image_to_text(nonexistent_image, output_file_name)
+        
+        # 检查结果是否为失败
+        assert "❌" in result
+        assert "file not found" in result
+        
+        # 检查输出文件是否未被创建
+        full_output_path = Path("artifacts") / output_file_name
+        assert not full_output_path.exists()
+        
+    
+    def test_ocr_empty_output(self, sample_image, test_artifacts_dir):
+        """Test OCR on an image with little or no recognizable text (e.g., solid color)"""
+        image_path = sample_image # This is a 200x200 blue image with a white square, little text
+        output_file_name = "test/ocr_empty.txt"
+            
+        # 运行 OCR 工具
+        result = ocr_image_to_text(str(image_path), output_file_name)
+        
+        # 检查结果可能是成功但有警告，或者失败
+        # 如果 pytesseract 成功运行但识别不出文字，通常会返回成功状态和警告。
+        assert "✅" in result or "⚠️" in result
+        
+        # 检查输出文件是否存在
+        full_output_path = Path("artifacts") / output_file_name
+        assert full_output_path.exists()
+        
+        # 检查内容是否为空或接近空
+        extracted_content = full_output_path.read_text(encoding='utf-8').strip()
+        assert len(extracted_content) < 100 # 应该只有很少的字符或空格
