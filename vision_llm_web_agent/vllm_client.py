@@ -277,8 +277,10 @@ When task is complete:
         # Debug: Print messages being sent to VLLM
         print(f"\n📤 Sending to VLLM:")
         print(f"   Model: {self.model}")
-        print(f"   Messages count: {len(messages)}")
-        for i, msg in enumerate(messages):
+        messages_to_show = messages[-3:] if len(messages) > 3 else messages
+        print(f"   Messages count: {len(messages)}, only showing the last 3 messages" if len(messages) > 3 else f"   Messages count: {len(messages)}")
+        # print the last 3 messages (or all if <= 3)
+        for i, msg in enumerate(messages_to_show):
             if msg['role'] == 'system':
                 print(f"   [{i}] System: {msg['content'][:200]}...")
             elif msg['role'] == 'user':
