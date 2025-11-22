@@ -78,7 +78,7 @@ class TestGetDomSummary:
     
     def test_dom_summary_without_browser(self):
         """Test DOM summary fails when browser not initialized"""
-        result = get_dom_summary(client=None, user_prompt="test", model=None)
+        result = get_dom_summary()
         assert "❌" in result
         assert "not initialized" in result.lower()
     
@@ -86,77 +86,51 @@ class TestGetDomSummary:
         """Test basic DOM summary"""
         goto_url(f"file://{sample_html_file}")
         
-        result = get_dom_summary(client=None, user_prompt="test", model=None)
+        result = get_dom_summary()
         
-        # Check result structure (dict or string)
-        if isinstance(result, dict):
-            result_text = result.get("llm_text", "")
-        else:
-            result_text = result
-        
-        # The semantic analyzer returns different format
-        assert len(result_text) > 0 or "elements" in result_text.lower()
+        # Result should be a string
+        assert isinstance(result, str)
+        assert len(result) > 0
     
     def test_dom_summary_contains_elements(self, cleanup_browser, sample_html_file):
         """Test that DOM summary contains expected elements"""
         goto_url(f"file://{sample_html_file}")
         
-        result = get_dom_summary(client=None, user_prompt="test", model=None)
+        result = get_dom_summary()
         
-        # Check result structure (dict or string)
-        if isinstance(result, dict):
-            result_text = result.get("llm_text", "")
-        else:
-            result_text = result
-        
-        # The semantic analyzer should extract interactive elements
-        assert len(result_text) > 0
+        # Should extract interactive elements
+        assert isinstance(result, str)
+        assert len(result) > 0
     
     def test_dom_summary_max_elements(self, cleanup_browser, sample_html_file):
         """Test DOM summary with max_elements limit"""
         goto_url(f"file://{sample_html_file}")
         
-        result = get_dom_summary(client=None, user_prompt="test", model=None, max_elements=2)
+        result = get_dom_summary(max_elements=2)
         
-        # Check result structure (dict or string)
-        if isinstance(result, dict):
-            # max_elements limits per element type, not total
-            # so total might be slightly more
-            assert len(result.get("filtered_elements", [])) >= 2
-            assert len(result.get("filtered_elements", [])) <= 10
-        else:
-            # String result
-            assert len(result) > 0
+        # Should return a string with limited elements
+        assert isinstance(result, str)
+        assert len(result) > 0
     
     def test_dom_summary_real_website(self, cleanup_browser):
         """Test DOM summary on real website"""
         goto_url("https://example.com")
         
-        result = get_dom_summary(client=None, user_prompt="test", model=None)
-        
-        # Check result structure (dict or string)
-        if isinstance(result, dict):
-            result_text = result.get("llm_text", "")
-        else:
-            result_text = result
+        result = get_dom_summary()
         
         # Should have some content
-        assert len(result_text) > 0
+        assert isinstance(result, str)
+        assert len(result) > 0
     
     def test_dom_summary_includes_selectors(self, cleanup_browser, sample_html_file):
         """Test that DOM summary includes CSS selectors"""
         goto_url(f"file://{sample_html_file}")
         
-        result = get_dom_summary(client=None, user_prompt="test", model=None)
-        
-        # Check result structure (dict or string)
-        if isinstance(result, dict):
-            result_text = result.get("llm_text", "")
-        else:
-            result_text = result
+        result = get_dom_summary()
         
         # Should have some content with selectors
-        assert len(result_text) > 0
+        assert isinstance(result, str)
+        assert len(result) > 0
 
 
 class TestGetPageTextContent:

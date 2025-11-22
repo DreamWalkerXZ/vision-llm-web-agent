@@ -298,13 +298,21 @@ class Agent:
         dom_analysis = None
         
         try:
-            registry = self.get_tool_registry()
-            dom_func = registry.get_tool("dom_summary")
-            if dom_func:
+            # Check if browser is initialized
+            from .tools.browser_control import browser_state
+            if browser_state.is_initialized:
                 # Get next_step or use first instruction, with safety check for empty history
                 next_step = self.next_step if self.next_step else (self.history[0]['content'] if self.history else "Analyze the page")
                 
-                dom_analysis = dom_func(self.vllm.client, next_step, self.vllm.language_model, max_elements=5)
+                # Use semantic_dom_analyzer directly (not through tool registry)
+                # This allows passing client and model parameters without breaking tool abstraction
+                dom_analysis = semantic_dom_analyzer.analyze_page(
+                    browser_state.get_current_page(), 
+                    self.vllm.client, 
+                    user_prompt=next_step, 
+                    model=self.vllm.language_model, 
+                    max_elements=5
+                )
                 
                 # Handle error case where dom_analysis is a string
                 if isinstance(dom_analysis, str):
@@ -331,8 +339,8 @@ class Agent:
                     dom = "DOM analysis returned unexpected type"
                     print(f"   ⚠️  DOM analysis returned unexpected type: {type(dom_analysis)}")
             else:
-                dom = "DOM tool not available"
-                print("   ⚠️  DOM tool not available")
+                dom = "Browser not initialized"
+                print("   ⚠️  Browser not initialized")
         except Exception as e:
             dom = f"Failed to extract DOM: {str(e)}"
             print(f"   ⚠️  DOM extraction failed: {e}")

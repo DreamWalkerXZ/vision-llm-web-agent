@@ -42,13 +42,30 @@ def take_screenshot(file_name: str = "screenshot.png") -> str:
     parameters={"max_elements": "int (optional, default: 50)"},
     category="information"
 )
-def get_dom_summary(client, user_prompt, model, max_elements: int = 50) -> str:
-    """Get a simplified DOM structure focusing on clickable and interactive elements"""
+def get_dom_summary(max_elements: int = 50) -> str:
+    """Get a simplified DOM structure focusing on clickable and interactive elements
+    
+    Note: This is a basic tool version. The agent controller uses semantic_dom_analyzer directly
+    for enhanced DOM analysis with LLM filtering.
+    """
     if not browser_state.is_initialized:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        return semantic_dom_analyzer.analyze_page(browser_state.get_current_page(), client, user_prompt=user_prompt, model=model, max_elements=max_elements)
+        # Use semantic analyzer without LLM filtering (model=None)
+        result = semantic_dom_analyzer.analyze_page(
+            browser_state.get_current_page(), 
+            client=None, 
+            user_prompt="", 
+            model=None, 
+            max_elements=max_elements
+        )
+        
+        # Return text representation
+        if isinstance(result, dict):
+            return result.get("llm_text", "No DOM text available")
+        else:
+            return str(result)
     
     except Exception as e:
         return f"❌ Failed to get DOM summary: {str(e)}"
