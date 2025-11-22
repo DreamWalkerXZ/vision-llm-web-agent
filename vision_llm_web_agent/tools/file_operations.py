@@ -11,7 +11,7 @@ from PIL import Image
 
 from .base import tool
 from .browser_control import browser_state
-from ..config.settings import ARTIFACTS_DIR
+from ..config.settings import ARTIFACTS_DIR, get_session_artifacts_dir
 import pytesseract
 
 
@@ -19,22 +19,26 @@ import pytesseract
 
 def normalize_file_path(file_path: str, is_input: bool = False) -> Path:
     """
-    Normalize file path to be relative to the ARTIFACTS_DIR, supporting nesting.
+    Normalize file path to be relative to the current session artifacts directory, supporting nesting.
+    Uses session-specific directory if available, otherwise falls back to ARTIFACTS_DIR.
     """
     path_obj = Path(file_path)
+    
+    # Get the current session artifacts directory (or fallback to ARTIFACTS_DIR)
+    session_artifacts_dir = get_session_artifacts_dir()
 
     # 1. If path is absolute, use it directly (e.g., used by temp pytest fixtures)
     if path_obj.is_absolute():
         return path_obj
     
-    # 2. If path is already rooted at ARTIFACTS_DIR, use it
-    if path_obj.parts[0] == ARTIFACTS_DIR.name:
-        # e.g., 'artifacts/test/file.pdf'
+    # 2. If path is already rooted at ARTIFACTS_DIR or session directory, use it
+    if path_obj.parts[0] == ARTIFACTS_DIR.name or path_obj.parts[0] == session_artifacts_dir.name:
+        # e.g., 'artifacts/test/file.pdf' or '20251122_123456/test/file.pdf'
         return path_obj
     
-    # 3. Otherwise, treat it as a path relative to ARTIFACTS_DIR (supports 'test/file.pdf')
-    # This is the key change to support nested paths in tests
-    full_path = ARTIFACTS_DIR / path_obj
+    # 3. Otherwise, treat it as a path relative to session artifacts directory (supports 'test/file.pdf')
+    # This is the key change to support nested paths and session-specific directories
+    full_path = session_artifacts_dir / path_obj
     
     # For input files, handle existence checks
     if is_input:
@@ -61,24 +65,32 @@ def normalize_file_path(file_path: str, is_input: bool = False) -> Path:
 
 @tool(
     name="download_pdf",
-    description="Download a PDF file from URL. Provide only the filename (e.g., 'abc.pdf'), not directory path.",
+    description="Download a PDF file from URL. Provide only the filename (e.g., 'abc.pdf'), not directory path. If url is 'current' or empty, downloads from current page URL.",
     parameters={
-        "url": "string (required)",
+        "url": "string (required, use 'current' to download from current page)",
         "file_name": "string (required, filename only, e.g., 'abc.pdf')"
     },
     category="file_operations"
 )
 def download_pdf_file(url: str, file_name: str) -> str:
-    """Download a PDF file from a URL"""
+    """Download a PDF file from a URL or current page"""
     browser_state.initialize()
     
     try:
+        # If url is 'current' or empty, use current page URL
+        if not url or url.lower() == 'current':
+            if not browser_state.is_initialized:
+                return "❌ Browser not initialized. Call goto() first or provide a URL."
+            url = browser_state.page.url
+            print(f"   📄 Using current page URL: {url}")
+        
         # Normalize path to artifacts/filename (single level)
         save_path = normalize_file_path(file_name, is_input=False)
         
+        # Ensure parent directory exists
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Strategy 1: Use API request to fetch PDF directly (works best for direct PDF URLs like arXiv)
+        # Strategy 1: Use API request to fetch PDF directly (works best for direct PDF URLs)
         try:
             response = browser_state.context.request.get(url, timeout=30000)
             if response.ok:
@@ -93,66 +105,195 @@ def download_pdf_file(url: str, file_name: str) -> str:
                     return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
                 else:
                     # Not a PDF, try other strategies
-                    pass
-        except Exception:
+                    print(f"   ⚠️  Response doesn't appear to be a PDF (first bytes: {pdf_content[:20]})")
+        except Exception as e:
             # Fall back to page navigation methods
-            pass
+            print(f"   ⚠️  Strategy 1 (API request) failed: {str(e)}")
         
         # Strategy 2: Try download event (for file download links)
-        download_page = browser_state.context.new_page()
-        
+        download_page = None
         try:
-            with download_page.expect_download(timeout=5000) as download_info:
-                download_page.goto(url, timeout=10000)
+            download_page = browser_state.context.new_page()
+            with download_page.expect_download(timeout=10000) as download_info:
+                download_page.goto(url, timeout=15000, wait_until="networkidle")
                 download = download_info.value
                 download.save_as(save_path)
-                download_page.close()
                 
                 if Path(save_path).exists():
                     size = Path(save_path).stat().st_size
-                    return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
-        except Exception:
-            # If download event didn't trigger, the URL might not be a direct download
-            pass
+                    if size > 0:
+                        # Verify it's a PDF
+                        with open(save_path, 'rb') as f:
+                            first_bytes = f.read(4)
+                        if first_bytes == b'%PDF':
+                            if download_page:
+                                download_page.close()
+                            return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
+                        else:
+                            # Not a PDF, delete the file
+                            Path(save_path).unlink()
+                            print(f"   ⚠️  Downloaded file is not a PDF")
+        except Exception as e:
+            # If download event didn't trigger, try next strategy
+            print(f"   ⚠️  Strategy 2 (download event) failed: {str(e)}")
+        finally:
+            if download_page:
+                download_page.close()
         
-        download_page.close()
-        return f"❌ Failed to download PDF from {url}"
+        # Strategy 3: Try to get PDF content from current page if we're on a PDF page
+        try:
+            if browser_state.is_initialized and browser_state.page.url == url:
+                # Try to get PDF content via JavaScript
+                pdf_content = browser_state.page.evaluate("""() => {
+                    try {
+                        // Try to get PDF content from embedded viewer or iframe
+                        const iframe = document.querySelector('iframe[src*=".pdf"], embed[src*=".pdf"], object[data*=".pdf"]');
+                        if (iframe) {
+                            return iframe.src || iframe.getAttribute('data') || iframe.getAttribute('src');
+                        }
+                        return null;
+                    } catch(e) {
+                        return null;
+                    }
+                }""")
+                
+                if pdf_content and pdf_content != url:
+                    # Recursively try to download from the iframe URL
+                    return download_pdf_file(pdf_content, file_name)
+        except Exception as e:
+            print(f"   ⚠️  Strategy 3 (iframe detection) failed: {str(e)}")
+        
+        # Strategy 4: Try using requests library as fallback (if available)
+        try:
+            import requests
+            response = requests.get(url, timeout=30, stream=True)
+            if response.status_code == 200:
+                content = response.content
+                if content.startswith(b'%PDF'):
+                    with open(save_path, 'wb') as f:
+                        f.write(content)
+                    size = Path(save_path).stat().st_size
+                    return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
+        except ImportError:
+            pass  # requests not available
+        except Exception as e:
+            print(f"   ⚠️  Strategy 4 (requests library) failed: {str(e)}")
+        
+        return f"❌ Failed to download PDF from {url}. Tried multiple strategies but none succeeded. Please check if the URL is accessible and points to a valid PDF file."
     
     except Exception as e:
-        return f"❌ Failed to download PDF: {str(e)}"
+        import traceback
+        error_details = traceback.format_exc()
+        return f"❌ Failed to download PDF: {str(e)}\n   Details: {error_details[:200]}"
 
 
 @tool(
     name="pdf_extract_text",
-    description="Extract text from PDF file. Provide only the filename (e.g., 'abc.pdf'), not directory path.",
+    description="Extract text from PDF file. Provide only the filename (e.g., 'abc.pdf'), not directory path. If searching for specific content (e.g., 'Figure 1'), omit page_num to search all pages. The tool will automatically highlight pages containing 'Figure' references.",
     parameters={
         "file_name": "string (required, filename only, e.g., 'abc.pdf')",
-        "page_num": "int (optional, specific page)"
+        "page_num": "int (optional, specific page number, 0-indexed. Omit to extract from all pages)",
+        "search_term": "string (optional, search for specific term like 'Figure 1' and return only relevant pages)"
     },
     category="file_operations"
 )
-def extract_pdf_text(file_name: str, page_num: Optional[int] = None) -> str:
-    """Extract text from a PDF file"""
+def extract_pdf_text(file_name: str, page_num: Optional[int] = None, search_term: Optional[str] = None) -> str:
+    """Extract text from a PDF file, with optional search functionality"""
     try:
         # Normalize path to artifacts/filename (single level)
         pdf_path = normalize_file_path(file_name, is_input=True)
         
         doc = pymupdf.open(pdf_path)
+        total_pages = len(doc)
         
         if page_num is not None:
-            if page_num >= len(doc):
-                return f"❌ Page {page_num} does not exist. PDF has {len(doc)} pages."
-            page = doc[page_num]
+            # Convert 1-based to 0-based if needed (handle both conventions)
+            if page_num > 0:
+                page_idx = page_num - 1  # Assume 1-based input
+            else:
+                page_idx = page_num  # 0-based input
+            
+            if page_idx < 0 or page_idx >= total_pages:
+                doc.close()
+                return f"❌ Page {page_num} does not exist. PDF has {total_pages} pages (use 1-{total_pages} or 0-{total_pages-1})."
+            page = doc[page_idx]
             text = page.get_text()
             doc.close()
-            return f"Page {page_num}:\n{text}"
+            return f"Page {page_num} (of {total_pages} total):\n{text}"
         else:
-            text = ""
-            for i, page in enumerate(doc):
-                text += f"\n{'='*80}\nPage {i+1}:\n{'='*80}\n"
-                text += page.get_text()
-            doc.close()
-            return text
+            # Extract from all pages with page numbers clearly marked
+            import re
+            
+            # If search_term is provided, only return pages containing the search term
+            if search_term:
+                matching_pages = []
+                for i, page in enumerate(doc):
+                    page_text = page.get_text()
+                    if search_term.lower() in page_text.lower():
+                        matching_pages.append((i, page_text))
+                
+                if not matching_pages:
+                    doc.close()
+                    return f"❌ Search term '{search_term}' not found in PDF (Total pages: {total_pages})"
+                
+                text = f"📄 Search Results for '{search_term}' (Found in {len(matching_pages)} page(s) out of {total_pages} total):\n"
+                text += f"{'='*80}\n"
+                for i, page_text in matching_pages:
+                    text += f"\n{'='*80}\nPage {i+1} (0-indexed: {i}):\n{'='*80}\n"
+                    # Highlight the search term in context (show surrounding text)
+                    lines = page_text.split('\n')
+                    for line in lines:
+                        if search_term.lower() in line.lower():
+                            text += f"🔍 {line}\n"
+                        else:
+                            text += f"{line}\n"
+                    # Find all figure references on this page
+                    figure_matches = re.findall(r'Figure\s+(\d+)', page_text, re.IGNORECASE)
+                    if figure_matches:
+                        text += f"\n💡 This page contains Figure(s): {', '.join(sorted(set(figure_matches), key=lambda x: int(x)))}\n"
+                doc.close()
+                return text
+            else:
+                # Extract from all pages with page numbers clearly marked
+                import re
+                
+                text = f"📄 PDF Text Content (Total pages: {total_pages})\n"
+                text += f"{'='*80}\n"
+                text += f"💡 TIP: If searching for 'Figure 1', use search_term='Figure 1' parameter to find it faster!\n"
+                text += f"{'='*80}\n"
+                
+                # First pass: find all pages with Figure references
+                figure_pages = {}  # {page_num: [figure_numbers]}
+                for i, page in enumerate(doc):
+                    page_text = page.get_text()
+                    if "Figure" in page_text or "figure" in page_text.lower():
+                        figure_matches = re.findall(r'Figure\s+(\d+)', page_text, re.IGNORECASE)
+                        if figure_matches:
+                            figure_pages[i+1] = sorted(set(figure_matches), key=lambda x: int(x))
+                
+                # Add summary of Figure locations at the top
+                if figure_pages:
+                    text += f"\n📊 FIGURE LOCATIONS SUMMARY:\n"
+                    for page_num, figures in sorted(figure_pages.items()):
+                        text += f"   Page {page_num}: Figure(s) {', '.join(figures)}\n"
+                    text += f"\n{'='*80}\n"
+                
+                # Extract text from all pages (limit to first 5000 chars per page to avoid overwhelming)
+                MAX_CHARS_PER_PAGE = 5000
+                for i, page in enumerate(doc):
+                    page_text = page.get_text()
+                    if len(page_text) > MAX_CHARS_PER_PAGE:
+                        page_text = page_text[:MAX_CHARS_PER_PAGE] + f"\n... (truncated, {len(page.get_text()) - MAX_CHARS_PER_PAGE} more characters)"
+                    
+                    text += f"\n{'='*80}\nPage {i+1} (0-indexed: {i}):\n{'='*80}\n"
+                    text += page_text
+                    
+                    # Add a hint if "Figure" is mentioned on this page
+                    if i+1 in figure_pages:
+                        text += f"\n💡 NOTE: This page contains Figure(s): {', '.join(figure_pages[i+1])}\n"
+                
+                doc.close()
+                return text
     
     except Exception as e:
         return f"❌ Failed to extract text from PDF: {str(e)}"
@@ -218,16 +359,17 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
         doc.close()
         
         if saved_images:
-            # 5. 返回信息包含相对路径（相对于ARTIFACTS_DIR），方便VLLM使用
-            from ..config.settings import ARTIFACTS_DIR
+            # 5. 返回信息包含相对路径（相对于session artifacts目录），方便VLLM使用
+            from ..config.settings import get_session_artifacts_dir
+            session_artifacts_dir = get_session_artifacts_dir()
             relative_paths = []
             for img_path in saved_images:
                 try:
-                    # 计算相对于ARTIFACTS_DIR的相对路径
-                    rel_path = Path(img_path).relative_to(ARTIFACTS_DIR)
+                    # 计算相对于session artifacts目录的相对路径
+                    rel_path = Path(img_path).relative_to(session_artifacts_dir)
                     relative_paths.append(str(rel_path))
                 except ValueError:
-                    # 如果不在ARTIFACTS_DIR下，使用完整路径
+                    # 如果不在session目录下，使用完整路径
                     relative_paths.append(img_path)
             
             result_msg = f"✅ Extracted {len(saved_images)} images to {output_dir}:\n"
@@ -249,20 +391,40 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
 
 @tool(
     name="save_image",
-    description="Save or crop an image. Provide only filenames (e.g., 'image.png'), not directory paths.",
+    description="Save, copy, or crop an image. Can copy images from subdirectories (e.g., 'extracted_images/page_1_img_1.png') to main artifacts directory. Provide relative paths for input (e.g., 'extracted_images/page_1_img_1.png') and filename only for output (e.g., 'figure1.png').",
     parameters={
-        "file_name": "string (required, filename only, e.g., 'image.png')",
-        "output_file_name": "string (optional, filename only, e.g., 'cropped.png')",
+        "file_name": "string (required, relative path from artifacts/ or filename, e.g., 'extracted_images/page_1_img_1.png' or 'image.png')",
+        "output_file_name": "string (optional, filename only, e.g., 'figure1.png' or 'cropped.png')",
         "crop_box": "list (optional, [left, top, right, bottom])"
     },
     category="file_operations"
 )
 def save_or_crop_image(file_name: str, output_file_name: Optional[str] = None, 
                        crop_box: Optional[list] = None) -> str:
-    """Save or crop an image"""
+    """
+    Save, copy, or crop an image. 
+    Supports copying images from subdirectories (e.g., extracted_images/) to main artifacts directory.
+    """
     try:
-        # Normalize input image path to artifacts/filename (single level)
+        # Normalize input image path - supports both relative paths and filenames
+        # First try as relative path (e.g., 'extracted_images/page_1_img_1.png')
         image_path = normalize_file_path(file_name, is_input=True)
+        
+        # If not found, try searching in common subdirectories
+        if not image_path.exists():
+            from ..config.settings import get_session_artifacts_dir
+            session_artifacts_dir = get_session_artifacts_dir()
+            filename_only = Path(file_name).name
+            # Try common subdirectories
+            common_dirs = ["extracted_images", "images", "output_images"]
+            for subdir in common_dirs:
+                potential_path = session_artifacts_dir / subdir / filename_only
+                if potential_path.exists():
+                    image_path = potential_path
+                    break
+            else:
+                # Still not found, return error
+                return f"❌ Image not found: {file_name}. Searched in: {file_name}, and subdirectories: {', '.join(common_dirs)}"
         
         img = Image.open(image_path)
         
@@ -275,7 +437,7 @@ def save_or_crop_image(file_name: str, output_file_name: Optional[str] = None,
         if output_file_name:
             save_path = normalize_file_path(output_file_name, is_input=False)
         else:
-            # Use same filename as input
+            # Use same filename as input (extract just the filename)
             save_path = normalize_file_path(Path(image_path).name, is_input=False)
         
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +474,7 @@ def write_text_to_file(content: str, file_name: str) -> str:
     except Exception as e:
         return f"❌ Failed to write text: {str(e)}"
 
+
 @tool(
     name="ocr_image_to_text",
     description="Perform Optical Character Recognition (OCR) on an image file and save the extracted text to a new file. Provide only filenames (e.g., 'image.png', 'output.txt'), not directory paths.",
@@ -331,13 +494,14 @@ def ocr_image_to_text(image_file_name: str, output_file_name: str) -> str:
         
         # 2. 如果文件不存在，尝试在常见子目录中搜索
         if not image_path_obj.exists():
-            from ..config.settings import ARTIFACTS_DIR
+            from ..config.settings import get_session_artifacts_dir
+            session_artifacts_dir = get_session_artifacts_dir()
             # 尝试在常见子目录中查找
             common_dirs = ["extracted_images", "images", "output_images"]
             filename = Path(image_file_name).name  # 只取文件名
             
             for subdir in common_dirs:
-                potential_path = ARTIFACTS_DIR / subdir / filename
+                potential_path = session_artifacts_dir / subdir / filename
                 if potential_path.exists():
                     image_path_obj = potential_path
                     break

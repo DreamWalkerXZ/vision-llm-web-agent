@@ -190,7 +190,22 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
         if url_before != url_after:
             return f"{click_result} → Navigated to: {url_after}"
         else:
-            return f"{click_result} (Page URL unchanged: {url_after})"
+            # URL didn't change - this might be an ineffective click
+            # Check if this is a form submit button or search button
+            button_text_lower = (text or "").lower() if text else ""
+            is_submit_button = (
+                "search" in button_text_lower or 
+                "submit" in button_text_lower or
+                "go" in button_text_lower or
+                selector and ("submit" in selector.lower() or "search" in selector.lower())
+            )
+            
+            if is_submit_button:
+                # This is likely a form submission that didn't work
+                # Suggest using press_key("Enter") in the input field instead
+                return f"{click_result} (Page URL unchanged: {url_after})\n⚠️ INEFFECTIVE CLICK: The button click did not submit the form. For form submission, try: 1) Use press_key(\"Enter\") in the input field after typing, or 2) Check if the form requires other fields to be filled, or 3) The button might be disabled - check DOM summary for button status."
+            else:
+                return f"{click_result} (Page URL unchanged: {url_after})"
             
     except Exception as e:
         if text:
@@ -215,11 +230,67 @@ def type_into_element(selector: str, text: str, clear_first: bool = True) -> str
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        # Wait longer for the element to be available
-        browser_state.page.wait_for_selector(selector, timeout=10000, state="visible")
+        # Wait for page to be ready first
+        try:
+            browser_state.page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass  # Continue if networkidle times out
+        
+        # Wait longer for the element to be available, try multiple states and selector variations
+        element_found = False
+        final_selector = selector
+        
+        # Strategy 1: Try original selector
+        try:
+            browser_state.page.wait_for_selector(selector, timeout=10000, state="visible")
+            element_found = True
+        except Exception:
+            pass
+        
+        # Strategy 2: If selector starts with #, try with input/textarea prefix
+        if not element_found and selector.startswith('#'):
+            alt_selector = selector[1:]
+            for tag in ['input', 'textarea']:
+                try:
+                    test_selector = f"{tag}#{alt_selector}"
+                    browser_state.page.wait_for_selector(test_selector, timeout=5000, state="visible")
+                    final_selector = test_selector
+                    element_found = True
+                    break
+                except Exception:
+                    pass
+        
+        # Strategy 3: Try attached state (element exists but might not be visible yet)
+        if not element_found:
+            try:
+                browser_state.page.wait_for_selector(final_selector, timeout=5000, state="attached")
+                element_found = True
+            except Exception:
+                pass
+        
+        # Strategy 4: Try with input/textarea prefix if not already tried
+        if not element_found and not selector.startswith('#'):
+            for tag in ['input', 'textarea']:
+                try:
+                    test_selector = f"{tag}{selector}" if selector.startswith('[') else f"{tag}.{selector}" if selector.startswith('.') else f"{tag}#{selector}"
+                    browser_state.page.wait_for_selector(test_selector, timeout=3000, state="visible")
+                    final_selector = test_selector
+                    element_found = True
+                    break
+                except Exception:
+                    pass
+        
+        if not element_found:
+            # Provide helpful error message with suggestions
+            return f"❌ Failed to type into {selector}: Element not found or not visible.\n💡 Try alternative selectors like: input{selector}, textarea{selector}, or check DOM summary for correct selector in INPUT FIELDS section"
+        
+        selector = final_selector
         
         # Focus on the element (this replaces the need for clicking)
         browser_state.page.focus(selector)
+        
+        # Small wait to ensure focus
+        time.sleep(0.2)
         
         if clear_first:
             browser_state.page.fill(selector, "")
@@ -228,7 +299,12 @@ def type_into_element(selector: str, text: str, clear_first: bool = True) -> str
         browser_state.page.type(selector, text, delay=50)  # Add small delay between keystrokes
         return f"✅ Typed '{text}' into {selector}"
     except Exception as e:
-        return f"❌ Failed to type into {selector}: {str(e)}"
+        # Provide helpful error message with suggestions
+        error_msg = f"❌ Failed to type into {selector}: {str(e)}"
+        # Suggest trying alternative selectors
+        if '#' in selector:
+            error_msg += f"\n💡 Try alternative selectors like: input{selector}, textarea{selector}, or check DOM summary for correct selector"
+        return error_msg
 
 
 @tool(
