@@ -24,12 +24,6 @@ uv.lock
 
 # Artifacts and outputs
 artifacts/
-*.png
-*.jpg
-*.jpeg
-*.pdf
-*.txt
-execution_log.json
 
 # Model cache
 .cache/
