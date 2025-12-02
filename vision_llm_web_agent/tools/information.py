@@ -6,6 +6,7 @@ Tools for capturing screenshots, DOM, and page content
 from pathlib import Path
 from .base import tool
 from .browser_control import browser_state
+from .dom_analyzer import semantic_dom_analyzer
 from ..config.settings import ARTIFACTS_DIR, get_session_artifacts_dir
 
 
@@ -31,7 +32,11 @@ def take_screenshot(file_name: str = "screenshot.png") -> str:
         save_path = str(save_path_obj)
         
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        browser_state.page.screenshot(path=save_path, full_page=False)
+        # Use get_current_page() to handle multi-tab scenarios
+        page = browser_state.get_current_page()
+        if not page:
+            return "❌ No active page found"
+        page.screenshot(path=save_path, full_page=False)
         return f"✅ Screenshot saved to: {save_path}"
     except Exception as e:
         return f"❌ Failed to take screenshot: {str(e)}"
@@ -49,8 +54,13 @@ def get_dom_summary(max_elements: int = 50) -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
+        # Use get_current_page() to handle multi-tab scenarios
+        page = browser_state.get_current_page()
+        if not page:
+            return "❌ No active page found"
+        
         # Wait for page to be fully loaded (especially for dynamic content)
-        browser_state.page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("networkidle", timeout=5000)
     except Exception:
         # If networkidle times out, that's okay - continue with current state
         pass
@@ -228,12 +238,12 @@ def get_dom_summary(max_elements: int = 50) -> str:
         }
         """
         
-        elements = browser_state.page.evaluate(dom_script)
+        elements = page.evaluate(dom_script)
         
         # Build readable output
         output = []
-        output.append(f"📄 Page: {browser_state.page.title()}")
-        current_url = browser_state.page.url
+        output.append(f"📄 Page: {page.title()}")
+        current_url = page.url
         output.append(f"🔗 URL: {current_url}")
         output.append("")
         
@@ -247,7 +257,7 @@ def get_dom_summary(max_elements: int = 50) -> str:
                 pdf_url = current_url
             else:
                 # Check content-type via JavaScript
-                content_type = browser_state.page.evaluate("""() => {
+                content_type = page.evaluate("""() => {
                     try {
                         const meta = document.querySelector('meta[http-equiv="Content-Type"]');
                         if (meta) return meta.content;
@@ -474,7 +484,11 @@ def get_page_text_content() -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        content = browser_state.page.evaluate("() => document.body.innerText")
+        # Use get_current_page() to handle multi-tab scenarios
+        page = browser_state.get_current_page()
+        if not page:
+            return "❌ No active page found"
+        content = page.evaluate("() => document.body.innerText")
         return content[:10000]
     except Exception as e:
         return f"❌ Failed to get page content: {str(e)}"

@@ -248,7 +248,11 @@ When task is complete:
    - Use relative path for input (e.g., "extracted_images/page_1_img_1.png") and filename only for output (e.g., "figure1.png")
    - Example: save_image(file_name="extracted_images/page_1_img_1.png", output_file_name="figure1.png")
    - This is useful for saving specific figures (e.g., Figure 1) with meaningful names
-10. Call write_text to save text content.
+10. Call write_text to save text content. **CRITICAL:**
+   - When writing a summary or interpretation, the "content" parameter MUST contain the FULL summary/interpretation text
+   - **DO NOT** use the "thought" field as the content - the "content" parameter should be a complete, well-formatted summary
+   - Example for summary: write_text(file_name="summary.txt", content="Complete summary text here covering all key points...")
+   - The "thought" field is for explaining your reasoning, NOT for the actual content to write to the file
 11. **IMPORTANT - Multi-Step Tasks (e.g., "save all the images, then interpret Figure 1"):**
    - **CRITICAL:** When a task has multiple steps, you MUST complete ALL steps before marking as "complete"!
    - **Step-by-step workflow for tasks like "save all images, interpret Figure 1":**

@@ -21,8 +21,12 @@ def normalize_file_path(file_path: str, is_input: bool = False) -> Path:
     """
     Normalize file path to be relative to the current session artifacts directory, supporting nesting.
     Uses session-specific directory if available, otherwise falls back to ARTIFACTS_DIR.
+    Handles both Windows and Unix path separators.
     """
-    path_obj = Path(file_path)
+    # Normalize path separators: convert backslashes to forward slashes first
+    # Path() will handle the rest correctly for the current OS
+    normalized_path = file_path.replace("\\", "/") if "\\" in file_path else file_path
+    path_obj = Path(normalized_path)
     
     # Get the current session artifacts directory (or fallback to ARTIFACTS_DIR)
     session_artifacts_dir = get_session_artifacts_dir()
@@ -102,7 +106,9 @@ def download_pdf_file(url: str, file_name: str) -> str:
                         f.write(pdf_content)
                     
                     size = Path(save_path).stat().st_size
-                    return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
+                    # Use forward slashes in path display for better readability across platforms
+                    display_path = str(save_path).replace("\\", "/")
+                    return f"✅ PDF downloaded to: {display_path} (size: {size} bytes)"
                 else:
                     # Not a PDF, try other strategies
                     print(f"   ⚠️  Response doesn't appear to be a PDF (first bytes: {pdf_content[:20]})")
@@ -128,7 +134,8 @@ def download_pdf_file(url: str, file_name: str) -> str:
                         if first_bytes == b'%PDF':
                             if download_page:
                                 download_page.close()
-                            return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
+                            display_path = str(save_path).replace("\\", "/")
+                            return f"✅ PDF downloaded to: {display_path} (size: {size} bytes)"
                         else:
                             # Not a PDF, delete the file
                             Path(save_path).unlink()
@@ -173,7 +180,9 @@ def download_pdf_file(url: str, file_name: str) -> str:
                     with open(save_path, 'wb') as f:
                         f.write(content)
                     size = Path(save_path).stat().st_size
-                    return f"✅ PDF downloaded to: {save_path} (size: {size} bytes)"
+                    # Use forward slashes in path display for better readability across platforms
+                    display_path = str(save_path).replace("\\", "/")
+                    return f"✅ PDF downloaded to: {display_path} (size: {size} bytes)"
         except ImportError:
             pass  # requests not available
         except Exception as e:
@@ -278,6 +287,16 @@ def extract_pdf_text(file_name: str, page_num: Optional[int] = None, search_term
                         text += f"   Page {page_num}: Figure(s) {', '.join(figures)}\n"
                     text += f"\n{'='*80}\n"
                 
+                # Add guidance for summarization tasks
+                # Check if this is likely a summarization task by checking recent history
+                # This will be added at the end of the text extraction
+                summarization_hint = "\n\n💡 NEXT STEPS FOR SUMMARIZATION:\n"
+                summarization_hint += "If your task is to summarize this paper, you should:\n"
+                summarization_hint += "1. Review the extracted text above (especially Abstract, Introduction, and Conclusion sections)\n"
+                summarization_hint += "2. Use write_text tool to create a summary file (e.g., write_text(file_name=\"summary.txt\", content=\"your summary here\"))\n"
+                summarization_hint += "3. The summary should cover: main contributions, methodology, key results, and conclusions\n"
+                summarization_hint += "4. After writing the summary, mark the task as complete\n"
+                
                 # Extract text from all pages (limit to first 5000 chars per page to avoid overwhelming)
                 MAX_CHARS_PER_PAGE = 5000
                 for i, page in enumerate(doc):
@@ -291,6 +310,9 @@ def extract_pdf_text(file_name: str, page_num: Optional[int] = None, search_term
                     # Add a hint if "Figure" is mentioned on this page
                     if i+1 in figure_pages:
                         text += f"\n💡 NOTE: This page contains Figure(s): {', '.join(figure_pages[i+1])}\n"
+                
+                # Add summarization guidance at the end
+                text += summarization_hint
                 
                 doc.close()
                 return text
@@ -326,7 +348,8 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
         
         # 检查 PDF 文件是否存在 (使用规范化后的 Path 对象)
         if not pdf_path_obj.exists():
-             return f"❌ PDF file not found at: {str(pdf_path_obj)}"
+             display_path = str(pdf_path_obj).replace("\\", "/")
+             return f"❌ PDF file not found at: {display_path}"
         
         doc = pymupdf.open(pdf_path_obj) # 使用 Path 对象
         total_pages = len(doc)
@@ -367,10 +390,13 @@ def extract_pdf_images(file_name: str, output_dir: str, page_num: Optional[int] 
                 try:
                     # 计算相对于session artifacts目录的相对路径
                     rel_path = Path(img_path).relative_to(session_artifacts_dir)
-                    relative_paths.append(str(rel_path))
+                    # 统一使用正斜杠，避免Windows反斜杠问题
+                    rel_path_str = str(rel_path).replace("\\", "/")
+                    relative_paths.append(rel_path_str)
                 except ValueError:
-                    # 如果不在session目录下，使用完整路径
-                    relative_paths.append(img_path)
+                    # 如果不在session目录下，使用完整路径，但统一为正斜杠
+                    rel_path_str = str(img_path).replace("\\", "/")
+                    relative_paths.append(rel_path_str)
             
             result_msg = f"✅ Extracted {len(saved_images)} images to {output_dir}:\n"
             result_msg += "\n".join([f"  - {rel_path}" for rel_path in relative_paths])
@@ -407,14 +433,17 @@ def save_or_crop_image(file_name: str, output_file_name: Optional[str] = None,
     """
     try:
         # Normalize input image path - supports both relative paths and filenames
+        # Handle Windows backslash paths by converting to forward slashes first
+        normalized_file_name = file_name.replace("\\", "/") if "\\" in file_name else file_name
+        
         # First try as relative path (e.g., 'extracted_images/page_1_img_1.png')
-        image_path = normalize_file_path(file_name, is_input=True)
+        image_path = normalize_file_path(normalized_file_name, is_input=True)
         
         # If not found, try searching in common subdirectories
         if not image_path.exists():
             from ..config.settings import get_session_artifacts_dir
             session_artifacts_dir = get_session_artifacts_dir()
-            filename_only = Path(file_name).name
+            filename_only = Path(normalized_file_name).name
             # Try common subdirectories
             common_dirs = ["extracted_images", "images", "output_images"]
             for subdir in common_dirs:
@@ -424,7 +453,7 @@ def save_or_crop_image(file_name: str, output_file_name: Optional[str] = None,
                     break
             else:
                 # Still not found, return error
-                return f"❌ Image not found: {file_name}. Searched in: {file_name}, and subdirectories: {', '.join(common_dirs)}"
+                return f"❌ Image not found: {file_name}. Searched in: {normalized_file_name}, and subdirectories: {', '.join(common_dirs)}"
         
         img = Image.open(image_path)
         
@@ -443,7 +472,9 @@ def save_or_crop_image(file_name: str, output_file_name: Optional[str] = None,
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         
         img.save(save_path)
-        return f"✅ Image saved to: {save_path}"
+        # Use forward slashes in path display for better readability
+        display_path = str(save_path).replace("\\", "/")
+        return f"✅ Image saved to: {display_path}"
     
     except Exception as e:
         return f"❌ Failed to save image: {str(e)}"
@@ -469,10 +500,137 @@ def write_text_to_file(content: str, file_name: str) -> str:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         
-        return f"✅ Text written to: {file_path}"
+        # Use forward slashes in path display for better readability
+        display_path = str(file_path).replace("\\", "/")
+        return f"✅ Text written to: {display_path}"
     
     except Exception as e:
         return f"❌ Failed to write text: {str(e)}"
+
+
+@tool(
+    name="generate_final_interpretation",
+    description="Generate a final interpretation/summary of the entire conversation session. This tool is typically called automatically at the end of a session. It analyzes all the conversation history and generates a comprehensive summary in Chinese and English.",
+    parameters={},
+    category="file_operations"
+)
+def generate_final_interpretation() -> str:
+    """
+    Generate a final interpretation/summary of the entire conversation session.
+    Note: This tool is usually called automatically by the agent controller at session end.
+    It reads the execution log to generate a summary.
+    """
+    try:
+        from ..config.settings import get_session_artifacts_dir
+        
+        session_artifacts_dir = get_session_artifacts_dir()
+        
+        # Try to read execution log to get history
+        import json
+        from pathlib import Path
+        
+        # Find the execution log file
+        log_files = list(session_artifacts_dir.glob("execution_log_*.json"))
+        if not log_files:
+            return "❌ No execution log found. Cannot generate interpretation."
+        
+        # Read the most recent log
+        latest_log = sorted(log_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        with open(latest_log, "r", encoding="utf-8") as f:
+            log_data = json.load(f)
+        
+        history = log_data.get("history", [])
+        
+        # Generate basic summary from history
+        summary_parts = []
+        summary_parts.append("=" * 80)
+        summary_parts.append("SESSION SUMMARY / 会话总结")
+        summary_parts.append("=" * 80)
+        summary_parts.append("")
+        
+        # Extract user instructions
+        user_instructions = []
+        for item in history:
+            if item.get("role") == "user":
+                content = item.get("content", "")
+                # Try to parse JSON content
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "tool_execution" in parsed:
+                        continue  # Skip tool execution results
+                except:
+                    pass
+                if content and not content.startswith("{") and len(content) > 10:
+                    user_instructions.append(content)
+        
+        if user_instructions:
+            summary_parts.append("User Instructions / 用户指令:")
+            summary_parts.append("-" * 80)
+            for i, inst in enumerate(user_instructions, 1):
+                summary_parts.append(f"{i}. {inst}")
+            summary_parts.append("")
+        
+        # Extract key actions
+        summary_parts.append("Key Actions / 关键操作:")
+        summary_parts.append("-" * 80)
+        action_count = {}
+        for item in history:
+            if item.get("role") == "assistant":
+                content = item.get("content", "")
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "tool" in parsed:
+                        tool_name = parsed.get("tool", "")
+                        action_count[tool_name] = action_count.get(tool_name, 0) + 1
+                except:
+                    pass
+        
+        for tool_name, count in sorted(action_count.items()):
+            summary_parts.append(f"- {tool_name}: {count} times")
+        summary_parts.append("")
+        
+        # Extract results
+        summary_parts.append("Results / 结果:")
+        summary_parts.append("-" * 80)
+        success_count = 0
+        failure_count = 0
+        for item in history:
+            if item.get("role") == "user":
+                content = item.get("content", "")
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "tool_execution" in parsed:
+                        result = parsed.get("result", "")
+                        if "✅" in result or "成功" in result:
+                            success_count += 1
+                        elif "❌" in result or "失败" in result:
+                            failure_count += 1
+                except:
+                    pass
+        
+        summary_parts.append(f"- Successful operations: {success_count}")
+        summary_parts.append(f"- Failed operations: {failure_count}")
+        summary_parts.append("")
+        
+        summary_parts.append("=" * 80)
+        summary_parts.append(f"Total Rounds: {log_data.get('total_rounds', 0)}")
+        summary_parts.append(f"Session ID: {log_data.get('session_id', 'N/A')}")
+        summary_parts.append(f"Timestamp: {log_data.get('timestamp', 'N/A')}")
+        summary_parts.append("=" * 80)
+        
+        summary_text = "\n".join(summary_parts)
+        
+        # Save to file
+        output_file = session_artifacts_dir / "session_summary.txt"
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(summary_text)
+        
+        # Use forward slashes in path display for better readability
+        display_path = str(output_file).replace("\\", "/")
+        return f"✅ Final interpretation generated and saved to: {display_path}"
+    
+    except Exception as e:
+        return f"❌ Failed to generate final interpretation: {str(e)}"
 
 
 @tool(
@@ -508,8 +666,9 @@ def ocr_image_to_text(image_file_name: str, output_file_name: str) -> str:
             else:
                 # 如果还是找不到，返回错误，但提供搜索建议
                 search_hints = "\n".join([f"  - {subdir}/{filename}" for subdir in common_dirs])
+                display_path = str(image_path_obj).replace("\\", "/")
                 return (
-                    f"❌ Image file not found at: {str(image_path_obj)}\n"
+                    f"❌ Image file not found at: {display_path}\n"
                     f"💡 Tried searching in common directories:\n{search_hints}\n"
                     f"💡 Please provide the full relative path (e.g., 'extracted_images/{filename}')"
                 )
@@ -531,16 +690,17 @@ def ocr_image_to_text(image_file_name: str, output_file_name: str) -> str:
             f.write(extracted_text)
             
         # 6. 返回成功信息
+        display_text_path = str(text_save_path_obj).replace("\\", "/")
         if extracted_text.strip():
             # 提取前50个字符作为预览
             preview = extracted_text.strip()[:50].replace('\n', ' ')
             return (
                 f"✅ OCR completed successfully on {image_file_name}. "
-                f"Text saved to: {str(text_save_path_obj)}\n"
+                f"Text saved to: {display_text_path}\n"
                 f"> Preview: '{preview}'..."
             )
         else:
-            return f"⚠️ OCR completed, but no meaningful text was extracted from {image_file_name}. Text saved to: {str(text_save_path_obj)}"
+            return f"⚠️ OCR completed, but no meaningful text was extracted from {image_file_name}. Text saved to: {display_text_path}"
         
     except ImportError as e:
         # 捕获 pytesseract 或 PIL 导入错误

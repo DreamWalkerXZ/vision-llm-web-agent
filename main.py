@@ -81,31 +81,57 @@ def main():
         task = example_tasks[0]
         print(f"Using example task: {task}")
     
-    # Execute task
+    # Execute first task
+    is_first_task = True
     try:
-        result = agent.execute(task)
-        
-        print("\n" + "="*80)
-        print("📊 FINAL RESULT")
-        print("="*80)
-        print(result)
-        print()
-        
-        # Show artifacts
-        artifacts = list(ARTIFACTS_DIR.glob("*"))
-        if artifacts:
-            print(f"\n📁 Generated {len(artifacts)} artifacts in {ARTIFACTS_DIR}/")
-            recent = sorted(artifacts, key=lambda p: p.stat().st_mtime, reverse=True)[:5]
-            for artifact in recent:
-                size = artifact.stat().st_size
-                print(f"   - {artifact.name} ({size} bytes)")
+        while True:
+            try:
+                result = agent.execute(task, is_followup=not is_first_task)
+                
+                print("\n" + "="*80)
+                print("📊 RESULT")
+                print("="*80)
+                print(result)
+                print()
+                
+                # Show artifacts
+                artifacts = list(ARTIFACTS_DIR.glob("*"))
+                if artifacts:
+                    print(f"\n📁 Generated {len(artifacts)} artifacts in {ARTIFACTS_DIR}/")
+                    recent = sorted(artifacts, key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+                    for artifact in recent:
+                        size = artifact.stat().st_size
+                        print(f"   - {artifact.name} ({size} bytes)")
+                
+                # Ask for follow-up task
+                print("\n" + "="*80)
+                print("💬 You can continue with a follow-up task in this session")
+                print("   (Type 'exit', 'quit', or 'q' to end the session)")
+                print("="*80)
+                followup = input("\nEnter follow-up task (or 'exit' to end): ").strip()
+                
+                if not followup or followup.lower() in ['exit', 'quit', 'q']:
+                    print("\n👋 Ending session...")
+                    break
+                
+                task = followup
+                is_first_task = False
+                
+            except KeyboardInterrupt:
+                print("\n\n⚠️  Task interrupted by user")
+                break
     
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Task interrupted by user")
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
+    
+    finally:
+        # Always generate final interpretation and close session
+        try:
+            agent.close_session()
+        except Exception as e:
+            print(f"⚠️  Error during session close: {e}")
     
     print("\n" + "="*80)
     print("👋 Thank you for using Vision-LLM Web Agent!")

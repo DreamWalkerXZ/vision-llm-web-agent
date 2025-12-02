@@ -85,6 +85,16 @@ class Agent:
         self.force_dom_summary_threshold = 5  # If same action fails 5 times, force dom_summary call
         self.blocked_actions: Dict[str, int] = {}  # Track blocked actions: {action_key: failure_count}
         
+        # File processing tools that should trigger auto-completion after 3 repeated calls
+        self.file_processing_tools = [
+            "pdf_extract_text",
+            "pdf_extract_images",
+            "save_image",
+            "write_text",
+            "ocr_image_to_text"
+        ]
+        self.file_processing_repeat_threshold = 3  # If same file processing tool called 3 times, end instruction
+        
         # Create session-specific artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         
@@ -158,8 +168,7 @@ class Agent:
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
     
-    
-    def execute(self, instruction: str) -> str:
+    def execute(self, instruction: str, is_followup: bool = False) -> str:
         """
         Execute a user instruction through multi-round interaction.
         
@@ -170,38 +179,50 @@ class Agent:
             Final answer or error message
         """
         print(f"\n{'='*80}")
-        print(f"🎯 Task: {instruction}")
+        if is_followup:
+            print(f"🔄 Follow-up Task: {instruction}")
+        else:
+            print(f"🎯 Task: {instruction}")
         print(f"{'='*80}\n")
         
-        # Initialize history with user instruction
-        self.history = [{
-            "role": "user",
-            "content": instruction
-        }]
+        # Reset recent tool calls for new instruction (to track repetition within this instruction)
+        self.recent_tool_calls = []
         
-        # Store original instruction for multi-step task detection
-        self.original_instruction = instruction
-        
-        # Store original instruction for multi-step task detection
-        self.original_instruction = instruction
+        # Initialize history with user instruction (or append if follow-up)
+        if not is_followup:
+            self.history = [{
+                "role": "user",
+                "content": instruction
+            }]
+            self.original_instruction = instruction
+        else:
+            self.history.append({
+                "role": "user",
+                "content": instruction
+            })
+            self.original_instruction = instruction
         
         start_time = time.time()
         
-        # Open browser to DuckDuckGo before first round
-        print("🌐 Opening browser to attention")
-        try:
-            registry = self.get_tool_registry()
-            goto_func = registry.get_tool("goto")
-            if goto_func:
-                result = goto_func("https://duckduckgo.com/")
-                print(f"   {result}")
-            else:
-                print("   ⚠️  goto tool not available")
-        except Exception as e:
-            print(f"   ⚠️  Failed to open browser: {e}")
+        # Open browser to DuckDuckGo before first round (only if not follow-up)
+        if not is_followup:
+            print("🌐 Opening browser to DuckDuckGo")
+            try:
+                registry = self.get_tool_registry()
+                goto_func = registry.get_tool("goto")
+                if goto_func:
+                    result = goto_func("https://duckduckgo.com/")
+                    print(f"   {result}")
+                else:
+                    print("   ⚠️  goto tool not available")
+            except Exception as e:
+                print(f"   ⚠️  Failed to open browser: {e}")
         
         try:
-            for round_num in range(self.max_rounds):
+            # Determine starting round number (for follow-ups, continue from where we left off)
+            start_round = len(self.execution_log) if is_followup else 0
+            for i in range(start_round, self.max_rounds):
+                round_num = i
                 print(f"\n{'─'*80}")
                 print(f"🔄 Round {round_num + 1}/{self.max_rounds}")
                 print(f"{'─'*80}")
@@ -236,13 +257,6 @@ class Agent:
             traceback.print_exc()
             
             return f"Fatal error: {str(e)}"
-        
-        finally:
-            # Clean up browser
-            registry = self.get_tool_registry()
-            close_browser_func = registry.get_tool("close_browser")
-            if close_browser_func:
-                close_browser_func()
     
     def execute_round(self, round_num: int) -> Dict[str, Any]:
         """
@@ -481,15 +495,65 @@ class Agent:
             # Check for repeated tool calls (same tool with same parameters)
             current_call_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
             recent_same_calls = [call for call in self.recent_tool_calls if call.get("key") == current_call_key]
+            repeat_count = len(recent_same_calls) + 1  # +1 for current call
+            
+            # Check if this is a file processing tool and if it's been called 3 times
+            # If so, auto-complete the instruction to prevent infinite loop
+            if tool_name in self.file_processing_tools and repeat_count >= self.file_processing_repeat_threshold:
+                print(f"\n🚨 REPEATED FILE PROCESSING TOOL CALL DETECTED: {tool_name} called {repeat_count} times")
+                print(f"   🎯 Auto-completing instruction to prevent infinite loop...")
+                
+                # Add assistant's tool call to history for logging
+                assistant_tool_call = {
+                    "thought": response.get("thought", ""),
+                    "tool": tool_name,
+                    "parameters": parameters
+                }
+                self.history.append({
+                    "role": "assistant",
+                    "content": json.dumps(assistant_tool_call, ensure_ascii=False, indent=2)
+                })
+                
+                # Add auto-completion message to history
+                auto_complete_msg = {
+                    "role": "user",
+                    "content": json.dumps({
+                        "tool_execution": "auto_complete",
+                        "result": f"⚠️ Instruction auto-completed: The file processing tool '{tool_name}' has been called {repeat_count} times with the same parameters. This indicates the task may be stuck in a loop. Current instruction has been ended."
+                    }, ensure_ascii=False, indent=2)
+                }
+                self.history.append(auto_complete_msg)
+                
+                # Log execution
+                self.execution_log.append({
+                    "round": round_num,
+                    "action": "auto_complete",
+                    "reason": f"File processing tool '{tool_name}' repeated {repeat_count} times",
+                    "tool": tool_name,
+                    "parameters": parameters,
+                    "elapsed_time": time.time() - round_start_time
+                })
+                self.save_execution_log()
+                
+                completion_msg = (
+                    f"⚠️ Instruction auto-completed: The file processing tool '{tool_name}' has been called "
+                    f"{repeat_count} times with the same parameters. This indicates the task may be stuck in a loop. "
+                    f"Current instruction has been ended. Please provide the next instruction."
+                )
+                
+                return {
+                    "is_complete": True,
+                    "final_answer": completion_msg
+                }
             
             if len(recent_same_calls) >= 2:  # If same call appears 2+ times in recent history
-                print(f"\n⚠️  DETECTED REPEATED TOOL CALL: {tool_name} with same parameters called {len(recent_same_calls) + 1} times")
+                print(f"\n⚠️  DETECTED REPEATED TOOL CALL: {tool_name} with same parameters called {repeat_count} times")
                 print(f"   This might indicate the VLLM is stuck. Adding intervention message...")
                 
                 # Add intervention message
                 intervention_msg = {
                     "role": "user",
-                    "content": f"⚠️ INTERVENTION: You have called '{tool_name}' with the same parameters {len(recent_same_calls) + 1} times. The result was already provided. You MUST proceed to the next step:\n"
+                    "content": f"⚠️ INTERVENTION: You have called '{tool_name}' with the same parameters {repeat_count} times. The result was already provided. You MUST proceed to the next step:\n"
                 }
                 
                 # Provide specific guidance based on tool
@@ -676,6 +740,7 @@ class Agent:
             
             # Save execution log after each tool execution
             self.save_execution_log()
+            
         
         return {"is_complete": False}
     
@@ -695,6 +760,34 @@ class Agent:
             json.dump(log_data, f, indent=2, ensure_ascii=False)
         
         print(f"📝 Execution log updated: {log_path}")
+    
+    def close_session(self):
+        """
+        Close the session, generate final interpretation, and clean up resources.
+        This should be called at the end of a session.
+        """
+        print("\n" + "="*80)
+        print("🔚 Closing session...")
+        print("="*80)
+        
+        try:
+            # Generate final interpretation
+            from .tools.file_operations import generate_final_interpretation
+            result = generate_final_interpretation()
+            print(f"   {result}")
+        except Exception as e:
+            print(f"   ⚠️  Failed to generate final interpretation: {e}")
+        
+        # Clean up browser
+        try:
+            registry = self.get_tool_registry()
+            close_browser_func = registry.get_tool("close_browser")
+            if close_browser_func:
+                close_browser_func()
+        except Exception as e:
+            print(f"   ⚠️  Error closing browser: {e}")
+        
+        print("   ✅ Session closed")
 
 
 if __name__ == "__main__":

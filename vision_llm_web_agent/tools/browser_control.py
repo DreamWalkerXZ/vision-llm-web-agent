@@ -67,6 +67,16 @@ class BrowserState:
         
         self.is_initialized = False
         print("✅ Browser cleaned up")
+    
+    def get_current_page(self) -> Optional[Page]:
+        """Return the current active page (last opened one)"""
+        # If we have a context, get the most recently opened page
+        if self.context:
+            pages = self.context.pages
+            if pages:
+                return pages[-1]  # Return the most recently opened page
+        # Fallback to stored page
+        return self.page
 
 
 # Global browser instance
