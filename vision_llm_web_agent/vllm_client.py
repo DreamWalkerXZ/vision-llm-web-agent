@@ -239,11 +239,13 @@ When task is complete:
         # Add current state with vision input (if screenshot available)
         current_state_content = []
         
-        # Check if screenshot is available
+        # Check if screenshot is available and relevant
         screenshot_available = state_info.get('screenshot_available', False)
         screenshot_path = state_info.get('screenshot')
+        context_mode = state_info.get('context_mode', 'web_browsing')
         
-        if screenshot_available and screenshot_path:
+        # Only include screenshot if in web browsing mode
+        if screenshot_available and screenshot_path and context_mode == 'web_browsing':
             try:
                 # Add screenshot
                 current_state_content.append({
@@ -260,13 +262,68 @@ When task is complete:
         # Add text description in JSON format
         dom_text = state_info.get('dom', 'N/A')
         round_num = state_info.get('round', 0)
+        context_mode = state_info.get('context_mode', 'web_browsing')
         
         current_state_json = {
             "round": round_num,
+            "context_mode": context_mode,
             "screenshot_available": screenshot_available,
             "dom_summary": dom_text,
-            "instruction": "Analyze the current state and decide the next action. Respond with valid JSON."
+            "instruction": state_info.get('instruction', "Analyze the current state and decide the next action. Respond with valid JSON.")
         }
+        
+        # Add PDF detection warning if PDF page detected
+        if state_info.get('pdf_detected'):
+            current_state_json["pdf_detected"] = True
+            current_state_json["pdf_url"] = state_info.get('pdf_url', '')
+            # Make instruction more prominent
+            current_state_json["instruction"] = state_info.get('instruction', "🚨 PDF PAGE DETECTED! Download it using download_pdf(url=\"current\", file_name=\"report.pdf\")")
+        
+        # Add context-specific information
+        if context_mode == "local_file_processing":
+            current_state_json["available_local_files"] = state_info.get('available_local_files', [])
+            extracted_images = state_info.get('extracted_images', [])
+            current_state_json["extracted_images"] = extracted_images
+            current_state_json["note"] = "You are in LOCAL FILE PROCESSING mode. Use pdf_extract_text, pdf_extract_images, ocr_image_to_text tools. Ignore screenshot/DOM."
+            
+            # Add extracted images to VLLM input so it can "see" them
+            # Add images BEFORE text content so VLLM can see them first
+            # Limit to first 20 images to avoid overwhelming VLLM with too many images at once
+            MAX_IMAGES_TO_SHOW = 20
+            if extracted_images:
+                from .config.settings import get_session_artifacts_dir
+                session_artifacts_dir = get_session_artifacts_dir()
+                images_to_show = extracted_images[:MAX_IMAGES_TO_SHOW]
+                if len(extracted_images) > MAX_IMAGES_TO_SHOW:
+                    print(f"   ⚠️  Limiting to first {MAX_IMAGES_TO_SHOW} images (total: {len(extracted_images)})")
+                    current_state_json["note"] += f"\n⚠️ NOTE: Only showing first {MAX_IMAGES_TO_SHOW} of {len(extracted_images)} extracted images. If you need a specific image (e.g., Figure 1), extract images from the specific page instead of all pages."
+                
+                image_count = 0
+                for img_rel_path in images_to_show:
+                    try:
+                        # Handle both relative paths and full paths
+                        if Path(img_rel_path).is_absolute():
+                            img_full_path = Path(img_rel_path)
+                        else:
+                            img_full_path = session_artifacts_dir / img_rel_path
+                        
+                        if img_full_path.exists() and img_full_path.is_file():
+                            # Add image to current state content (before text)
+                            current_state_content.insert(image_count, {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": self.encode_image(str(img_full_path)),
+                                    "detail": "high"
+                                }
+                            })
+                            image_count += 1
+                            print(f"   🖼️  Added extracted image to VLLM input: {img_rel_path}")
+                        else:
+                            print(f"   ⚠️  Image file not found: {img_full_path}")
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to encode extracted image {img_rel_path}: {e}")
+                        import traceback
+                        traceback.print_exc()
         
         current_state_content.append({
             "type": "text",
@@ -281,10 +338,8 @@ When task is complete:
         # Debug: Print messages being sent to VLLM
         print(f"\n📤 Sending to VLLM:")
         print(f"   Model: {self.model}")
-        messages_to_show = messages[-3:] if len(messages) > 3 else messages
-        print(f"   Messages count: {len(messages)}, only showing the last 3 messages" if len(messages) > 3 else f"   Messages count: {len(messages)}")
-        # print the last 3 messages (or all if <= 3)
-        for i, msg in enumerate(messages_to_show):
+        print(f"   Messages count: {len(messages)}")
+        for i, msg in enumerate(messages):
             if msg['role'] == 'system':
                 print(f"   [{i}] System: {msg['content'][:200]}...")
             elif msg['role'] == 'user':
@@ -528,6 +583,43 @@ When task is complete:
                 "error": f"Failed to parse JSON: {e}",
                 "raw_response": content
             }
+    
+    def summarize_text(self, text: str, max_length: int = 500) -> str:
+        """
+        Generate a summary of the given text using the LLM.
+        
+        Args:
+            text: Text content to summarize
+            max_length: Maximum length of the summary in characters
+        
+        Returns:
+            Summary text
+        """
+        try:
+            # Truncate text if too long (to avoid token limits)
+            # Keep first 8000 characters for summarization
+            text_to_summarize = text[:8000] if len(text) > 8000 else text
+            
+            prompt = f"""Please provide a concise summary of the following text. 
+The summary should be clear, informative, and capture the main points.
+Keep it under {max_length} characters.
+
+Text to summarize:
+{text_to_summarize}
+
+Summary:"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=min(self.max_tokens, max_length // 2),  # Rough token estimate
+                temperature=0.3  # Lower temperature for more focused summaries
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            return summary
+        except Exception as e:
+            return f"❌ Failed to generate summary: {str(e)}"
     
     def test_connection(self) -> bool:
         """

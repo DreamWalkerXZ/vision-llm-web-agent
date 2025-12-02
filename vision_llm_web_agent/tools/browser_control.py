@@ -70,12 +70,13 @@ class BrowserState:
 
     def get_current_page(self) -> Optional[Page]:
         """Return the current active page (last opened one)"""
-        context = browser_state.page.context if browser_state.page else None
-        if context:
-            pages = context.pages
+        # If we have a context, get the most recently opened page
+        if self.context:
+            pages = self.context.pages
             if pages:
                 return pages[-1]  # Return the most recently opened page
-        return browser_state.page  # fallback
+        # Fallback to stored page
+        return self.page
 
 
 # Global browser instance
@@ -200,7 +201,22 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
         if url_before != url_after:
             return f"{click_result} → Navigated to: {url_after}"
         else:
-            return f"{click_result} (Page URL unchanged: {url_after})"
+            # URL didn't change - this might be an ineffective click
+            # Check if this is a form submit button or search button
+            button_text_lower = (text or "").lower() if text else ""
+            is_submit_button = (
+                "search" in button_text_lower or 
+                "submit" in button_text_lower or
+                "go" in button_text_lower or
+                selector and ("submit" in selector.lower() or "search" in selector.lower())
+            )
+            
+            if is_submit_button:
+                # This is likely a form submission that didn't work
+                # Suggest using press_key("Enter") in the input field instead
+                return f"{click_result} (Page URL unchanged: {url_after})\n⚠️ INEFFECTIVE CLICK: The button click did not submit the form. For form submission, try: 1) Use press_key(\"Enter\") in the input field after typing, or 2) Check if the form requires other fields to be filled, or 3) The button might be disabled - check DOM summary for button status."
+            else:
+                return f"{click_result} (Page URL unchanged: {url_after})"
             
     except Exception as e:
         if text:
