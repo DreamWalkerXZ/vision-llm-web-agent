@@ -624,7 +624,7 @@ class Agent:
                         
                         # Replace blocked action with dom_summary
                         tool_name = "dom_summary"
-                        parameters = {"max_elements": 150}
+                        parameters = {"max_elements": 15}
                         
                         # Add blocking message to history BEFORE assistant's tool call
                         blocking_msg = {
@@ -795,7 +795,7 @@ class Agent:
                 {"instruction": "Summarize the conversation history concisely."},
                 []
             )
-            while summary['is_complete'] is False:
+            if summary['is_complete'] is False:
                 # keep summarizing until complete
                 summary = self.vllm.plan_next_action(
                     self.history,

@@ -151,7 +151,7 @@ def click_element(selector: str = None, text: str = None, exact: bool = False) -
         elif count > 1:
             # If multiple elements, try to find one that works
             last_success_no_nav = None
-            for i in range(count):
+            for i in range(3):
                 try:
                     element = elements.nth(i)
                     url_before_click = page.url

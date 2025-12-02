@@ -28,7 +28,7 @@ class VLLMClient:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         language_model: Optional[str] = None,
-        max_tokens: int = 2000,
+        max_tokens: int = 8192,
         temperature: float = 0.7
     ):
         """
