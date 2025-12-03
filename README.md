@@ -25,6 +25,9 @@ uv sync
 
 # Install Playwright browsers
 uv run playwright install chromium
+
+# Terrecat OCR Tool
+You need to download the offline OCR tool of Terrecat. Please refer to https://blog.csdn.net/showgea/article/details/82656515 for more information.
 ```
 
 ### Usage
