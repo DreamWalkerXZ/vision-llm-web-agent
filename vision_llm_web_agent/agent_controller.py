@@ -238,11 +238,11 @@ class Agent:
                     print(f"✅ Task completed in {elapsed:.1f}s ({round_num + 1} rounds)")
                     print(f"{'='*80}")
                     print(f"\n{result['final_answer']}")
-                    summary = self.summary_history()
-                    self.history = [{
-                        'role': "assistant",
-                        'content': "I have completed the previous task. Here is a brief summary of what was done:\n" + summary
-                    }]
+                    # summary = self.summary_history()
+                    # self.history = [{
+                    #     'role': "assistant",
+                    #     'content': "I have completed the previous task. Here is a brief summary of what was done:\n" + summary
+                    # }]
                     
                     return result["final_answer"]
                 
