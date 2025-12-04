@@ -8,7 +8,8 @@ An autonomous web agent powered by Vision Language Models and Playwright that ex
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) package manager
-- VRAM: Minimum 20GB (40GB+ recommended for better performance)
+- If you use a local LLM
+  - VRAM: Minimum 20GB (40GB+ recommended for better performance)
 
 ### Installation
 
