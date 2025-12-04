@@ -37,15 +37,17 @@ from vision_llm_web_agent.config import (
     ARTIFACTS_DIR,
 )
 
+MAX_ROUNDS = 20
+
 
 RUN_AGENT_EVAL = os.getenv("RUN_AGENT_EVAL", "false").lower() in {"1", "true", "yes"}
 
 
 def classify_difficulty(step_count: int) -> str:
     """Return the difficulty label for a task based on its estimated steps."""
-    if step_count <= 4:
+    if step_count <= 5:
         return "easy"
-    if step_count <= 8:
+    if step_count <= 10:
         return "medium"
     return "hard"
 
@@ -69,108 +71,108 @@ def make_task(task_id: str, prompt: str, estimated_steps: int) -> EvaluationTask
 
 
 EVALUATION_TASKS: List[EvaluationTask] = [
-    # Easy (<=4 steps)
+    # Easy (<=5 steps)
     make_task(
         "easy_example_domain",
-        "Use DuckDuckGo to search for 'Example Domain', open example.com, and report the H1 text shown on the page.",
+        "Open example.com, and report the H1 text shown on the page.",
+        2,
+    ),
+    make_task(
+        "easy_python_news",
+        "Search for 'Python news', and report the latest news headline shown on the homepage.",
+        5,
+    ),
+    make_task(
+        "easy_bing_time",
+        "Go to bing.com, search for 'current time in Tokyo', and report the time displayed in the result widget.",
         4,
     ),
     make_task(
-        "easy_iana_reserved",
-        "Search for 'IANA reserved domains', open the official IANA page, and list the three example domains that it highlights.",
-        4,
+        "easy_github_signup",
+        "Search for 'GitHub' on DuckDuckGo, open github.com, and report the text of the 'Sign up' button in the header.",
+        5,
     ),
     make_task(
-        "easy_python_download",
-        "Use DuckDuckGo to locate the Python.org downloads page and report the text of the large download button shown near the hero banner.",
-        4,
+        "easy_wikipedia_ai",
+        "Open wikipedia.org, search for 'Artificial Intelligence', and report the first sentence of the summary.",
+        5,
     ),
     make_task(
-        "easy_wikipedia_hku_motto",
-        "Open the Wikipedia article for 'University of Hong Kong' and summarize the motto text shown in the infobox.",
-        4,
+        "easy_stackoverflow_top",
+        "Search for 'Stack Overflow' on DuckDuckGo, open the website, and report the title of the top question in the 'Top Questions' list.",
+        5,
     ),
     make_task(
-        "easy_mdn_flexbox",
-        "Find the MDN Web Docs page titled 'Basic concepts of flexbox' and provide the main heading text shown on that page.",
-        4,
+        "easy_weather_ny",
+        "Go to weather.com, search for 'New York', and report the current temperature.",
+        5,
     ),
     make_task(
-        "easy_openai_blog",
-        "Search for 'OpenAI research blog', open blog.openai.com, and report the title of the top-most article visible on the landing page.",
-        4,
+        "easy_hackernews_top",
+        "Search for 'Hacker News' on DuckDuckGo, open news.ycombinator.com, and report the title of the number 1 post.",
+        5,
     ),
     make_task(
-        "easy_duckduckgo_weather_hk",
-        "Ask DuckDuckGo for the current weather in Hong Kong and report the temperature shown in the instant answer card.",
-        3,
+        "easy_w3c_news",
+        "Search for 'W3C' on DuckDuckGo, open w3.org, and report the text of the first news item.",
+        5,
     ),
     make_task(
-        "easy_github_copilot_cta",
-        "Search for 'GitHub Copilot', open the official product page on github.com/features/copilot, and capture the label of the primary call-to-action button.",
-        4,
+        "easy_react_heading",
+        "Search for 'React' on DuckDuckGo, open react.dev, and report the main heading on the landing page.",
+        5,
     ),
+    # Medium (6-10 steps)
     make_task(
-        "easy_mdn_fetch",
-        "Locate the MDN documentation for the JavaScript Fetch API and provide the short description that appears directly under the title.",
-        4,
-    ),
-    make_task(
-        "easy_wikipedia_playwright",
-        "Open Wikipedia's article about Playwright (software) and summarize in one sentence what the tool is.",
-        4,
-    ),
-    # Medium (5-8 steps)
-    make_task(
-        "medium_sdgs_goal17",
-        "Search for 'Sustainable Development Goals', open the Wikipedia article, scroll to the goals list, and extract the text of Goal 17.",
-        6,
-    ),
-    make_task(
-        "medium_pep8_consistency",
-        "Find 'PEP 8 - Style Guide for Python Code' on peps.python.org, navigate to the 'A Foolish Consistency is the Hobgoblin of Little Minds' section, and quote the first principle bullet listed there.",
-        6,
-    ),
-    make_task(
-        "medium_playwright_release",
-        "Go to the GitHub repository microsoft/playwright, open the Releases tab, and report the latest release tag along with its publication date.",
-        7,
-    ),
-    make_task(
-        "medium_mdn_css_grid",
-        "Use DuckDuckGo to find the MDN 'CSS Grid Layout' guide, jump to the 'Line-based placement' section, and summarize the first paragraph in your own words.",
-        6,
-    ),
-    make_task(
-        "medium_hktram_fares",
-        "Open the Wikipedia page for 'Hong Kong Tramways', scroll to the 'Fares' section, and report the adult fare stated there.",
-        6,
-    ),
-    # Hard (>=9 steps)
-    make_task(
-        "hard_hong_kong_currency",
-        "Open the Wikipedia article for 'Hong Kong', capture the GDP (nominal) figure from the infobox, then follow the 'Hong Kong dollar' link and list the banknote denominations mentioned; conclude with a comparison of GDP versus the largest banknote.",
+        "medium_bilibili_anime",
+        "Search for \"bilibili\", open the bilibili website, type and search for the most popular anime, and give a like.",
         10,
     ),
     make_task(
-        "hard_playwright_release_compare",
-        "Starting from DuckDuckGo, find the GitHub repos 'microsoft/playwright' and 'microsoft/playwright-python'. Record the latest release tag for each and conclude with a sentence comparing the two versions.",
-        11,
-    ),
-    make_task(
-        "hard_python_asyncio_walk",
-        "Navigate to python.org, open the documentation for 'asyncio', follow the 'Event Loop' section, list the responsibilities bullets, then follow the 'Coroutines and Tasks' link and summarize its opening paragraph.",
-        10,
-    ),
-    make_task(
-        "hard_mdn_web_speech",
-        "Search for 'Web Speech API MDN', open the article, scroll to the 'Using the Web Speech API' section to list the two main interfaces, then review the 'Basic examples: Recognition' subsection and describe what the demo button triggers.",
+        "medium_imdb_scifi",
+        "Search for 'best sci-fi movies 2024' on DuckDuckGo, open an IMDB list result, sort by rating if possible, and list the top 3 movies with their ratings.",
         9,
     ),
     make_task(
-        "hard_world_heritage_hk",
-        "Use DuckDuckGo to find the 'List of UNESCO World Heritage Sites in China' on Wikipedia, count how many entries mention Hong Kong, then follow the 'Hong Kong UNESCO Global Geopark' entry to confirm the year it was inscribed.",
+        "medium_amazon_keyboard",
+        "Go to amazon.com, search for 'mechanical keyboard', filter by '4 stars & up', open the first result, and report the price and product title.",
         10,
+    ),
+    make_task(
+        "medium_recipe_cake",
+        "Search for 'recipe for chocolate cake' on DuckDuckGo, open a recipe from a major site, scroll to the ingredients list, and save the ingredients text to a file.",
+        9,
+    ),
+    make_task(
+        "medium_github_vscode_issue",
+        "Navigate to github.com/microsoft/vscode, go to the 'Issues' tab, filter by 'bug' label, and report the title of the most recently updated open bug.",
+        8,
+    ),
+    # Hard (>10 steps)
+    make_task(
+        "hard_paper_attention",
+        "Find the paper 'Attention is all you need', summarize the content, save all the images in the paper, then interpret the first image by explaining the process it shows.",
+        13,
+    ),
+    make_task(
+        "hard_spacex_history",
+        "Search for 'SpaceX Starship' on Wikipedia, find the launch history table, extract the date and outcome of the last 3 test flights, and summarize the progress in a short paragraph.",
+        12,
+    ),
+    make_task(
+        "hard_arxiv_llm",
+        "Go to arxiv.org, search for 'Large Language Models', sort by submission date, open the most recent paper's PDF, take a screenshot of the abstract, and summarize the abstract text.",
+        12,
+    ),
+    make_task(
+        "hard_housing_london",
+        "Search for 'housing prices in London' on a real estate site, search for a specific area, filter by price range, open the first 3 listings, and create a comparison table of price, location, and number of bedrooms.",
+        14,
+    ),
+    make_task(
+        "hard_tech_news_summary",
+        "Search for 'latest tech news' on TechCrunch, open the top 3 articles, summarize each one in 2 sentences, and identify a common theme across them.",
+        15,
     ),
 ]
 
@@ -223,9 +225,9 @@ class AgentCompletionEvaluator:
             raise RuntimeError("Failed to connect to the Vision LLM API; aborting evaluation run.")
 
         per_difficulty = {
-            "easy": {"total": 0, "success": 0},
-            "medium": {"total": 0, "success": 0},
-            "hard": {"total": 0, "success": 0},
+            "easy": {"total": 0, "success": 0, "duration_seconds": 0.0},
+            "medium": {"total": 0, "success": 0, "duration_seconds": 0.0},
+            "hard": {"total": 0, "success": 0, "duration_seconds": 0.0},
         }
         task_results = []
         started_at = datetime.utcnow().isoformat()
@@ -261,6 +263,10 @@ class AgentCompletionEvaluator:
             if success:
                 per_difficulty[difficulty]["success"] += 1
 
+            per_difficulty[difficulty]["duration_seconds"] += round(duration, 2)
+            with open(self.artifacts_root / "per_difficulty.json", "w", encoding="utf-8") as f:
+                json.dump(per_difficulty, f, ensure_ascii=False, indent=4)
+
             task_results.append(
                 {
                     "task_id": task.id,
@@ -274,6 +280,7 @@ class AgentCompletionEvaluator:
                     "artifact_dir": str(task_dir),
                 }
             )
+            agent.close_session()
 
         ended_at = datetime.utcnow().isoformat()
         total_duration = round(time.time() - wall_clock_start, 2)

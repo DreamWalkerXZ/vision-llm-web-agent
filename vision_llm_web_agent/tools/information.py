@@ -7,7 +7,7 @@ from pathlib import Path
 from .base import tool
 from .browser_control import browser_state
 from .dom_analyzer import semantic_dom_analyzer
-from ..config.settings import ARTIFACTS_DIR
+from ..config.settings import ARTIFACTS_DIR, get_session_artifacts_dir
 
 
 @tool(
@@ -22,15 +22,21 @@ def take_screenshot(file_name: str = "screenshot.png") -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
-        # Normalize path to artifacts_dir/path (preserve subdirectories)
+        # Normalize path to session artifacts_dir/filename (single level)
+        session_artifacts_dir = get_session_artifacts_dir()
         save_path_obj = Path(file_name)
         if not save_path_obj.is_absolute():
-            # Use artifacts_dir as base, preserving relative path structure
-            save_path_obj = ARTIFACTS_DIR / save_path_obj
+            # Extract filename and use session artifacts_dir
+            filename = save_path_obj.name
+            save_path_obj = session_artifacts_dir / filename
         save_path = str(save_path_obj)
         
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        browser_state.get_current_page().screenshot(path=save_path, full_page=False)
+        # Use get_current_page() to handle multi-tab scenarios
+        page = browser_state.get_current_page()
+        if not page:
+            return "❌ No active page found"
+        page.screenshot(path=save_path, full_page=False)
         return f"✅ Screenshot saved to: {save_path}"
     except Exception as e:
         return f"❌ Failed to take screenshot: {str(e)}"
@@ -83,7 +89,10 @@ def get_page_text_content() -> str:
         return "❌ Browser not initialized. Call goto() first."
     
     try:
+        # Use get_current_page() to handle multi-tab scenarios
         page = browser_state.get_current_page()
+        if not page:
+            return "❌ No active page found"
         content = page.evaluate("() => document.body.innerText")
         return content[:10000]
     except Exception as e:

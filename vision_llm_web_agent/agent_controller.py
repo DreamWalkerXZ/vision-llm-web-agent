@@ -55,59 +55,56 @@ class Agent:
         self.vllm = vllm_client
         self.max_rounds = max_rounds
         self.timeout_per_round = timeout_per_round
-        # Use settings.ARTIFACTS_DIR if not provided
-        self.artifacts_dir = Path(artifacts_dir) if artifacts_dir else ARTIFACTS_DIR
+        
+        # Generate session ID first
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create session-specific artifacts directory
+        # Each run gets its own subdirectory: artifacts/YYYYMMDD_HHMMSS/
+        base_artifacts_dir = Path(artifacts_dir) if artifacts_dir else ARTIFACTS_DIR
+        self.artifacts_dir = base_artifacts_dir / self.session_id
+        
+        # Set the session artifacts directory globally so tools can access it
+        from .config.settings import set_session_artifacts_dir
+        set_session_artifacts_dir(self.artifacts_dir)
         
         self.history: List[Dict[str, Any]] = []
         self.execution_log: List[Dict[str, Any]] = []
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_active = False
-        self.round_counter = 0
         self.next_step = ""
         
-        # Create artifacts directory
+        # Context mode: 'web_browsing' or 'local_file_processing'
+        self.context_mode = "web_browsing"
+        self.downloaded_pdf_files: List[str] = []  # Track downloaded PDFs
+        self.extracted_images: List[str] = []  # Track extracted image paths (relative to artifacts/)
+        self.original_instruction: str = ""  # Store original task for multi-step detection
+        
+        # Track recent failed actions to detect loops
+        self.recent_failures: List[Dict[str, Any]] = []  # List of recent failed tool calls
+        self.recent_tool_calls: List[Dict[str, Any]] = []  # Track recent tool calls to detect repetition
+        self.max_recent_calls = 5  # Track last 5 tool calls
+        self.max_failure_history = 10  # Keep last 10 failures
+        self.repeated_failure_threshold = 3  # If same action fails 3 times, force intervention
+        self.force_dom_summary_threshold = 5  # If same action fails 5 times, force dom_summary call
+        self.blocked_actions: Dict[str, int] = {}  # Track blocked actions: {action_key: failure_count}
+        
+        # File processing tools that should trigger auto-completion after 3 repeated calls
+        self.file_processing_tools = [
+            "pdf_extract_text",
+            "pdf_extract_images",
+            "save_image",
+            "write_text",
+            "ocr_image_to_text"
+        ]
+        self.file_processing_repeat_threshold = 3  # If same file processing tool called 3 times, end instruction
+        
+        # Create session-specific artifacts directory
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         
         print("🤖 Web Agent initialized")
         print(f"   Session ID: {self.session_id}")
         print(f"   Max rounds: {max_rounds}")
         print(f"   Timeout per round: {timeout_per_round}s")
-        print(f"   Artifacts dir: {artifacts_dir}")
-    
-    def _start_new_session(self, instruction: str):
-        """Initialize a new agent session with the first instruction."""
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.history = [{
-            "role": "user",
-            "content": instruction
-        }]
-        self.execution_log = []
-        self.round_counter = 0
-        self.session_active = True
-        
-        self._log_instruction(instruction, is_new_session=True)
-    
-    def _log_instruction(self, instruction: str, is_new_session: bool = False):
-        """Record the user instruction in the execution log."""
-        entry = {
-            "round": self.round_counter,
-            "action": "instruction",
-            "instruction": instruction,
-            "is_new_session": is_new_session,
-            "timestamp": datetime.now().isoformat()
-        }
-        self.execution_log.append(entry)
-        self.save_execution_log()
-    
-    def end_session(self):
-        """Manually end the current session and clean up browser resources."""
-        registry = self.get_tool_registry()
-        close_browser_func = registry.get_tool("close_browser")
-        if close_browser_func:
-            close_browser_func()
-        self.session_active = False
-        self.round_counter = 0
-        print("👋 Session ended and browser closed.")
+        print(f"   Artifacts dir: {self.artifacts_dir}")
     
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         """
@@ -127,62 +124,91 @@ class Agent:
             return f"❌ Unknown tool: {tool_name}"
         
         try:
+            # Block download_pdf if already in local_file_processing mode
+            if tool_name == "download_pdf" and self.context_mode == "local_file_processing":
+                if self.downloaded_pdf_files:
+                    return f"⚠️ PDF already downloaded! You are in LOCAL FILE PROCESSING mode. Available files: {', '.join(self.downloaded_pdf_files)}. Use pdf_extract_text/pdf_extract_images tools to process the existing PDF. DO NOT download again!"
+                else:
+                    # Allow download if no files tracked (edge case)
+                    pass
+            
             result = tool_func(**parameters)
-            return str(result)
+            result_str = str(result)
+            
+            # Switch to local file processing mode after successful PDF download
+            if tool_name == "download_pdf" and "✅" in result_str:
+                file_name = parameters.get("file_name")
+                if file_name:
+                    # Check if file already exists in the list
+                    if file_name not in self.downloaded_pdf_files:
+                        self.downloaded_pdf_files.append(file_name)
+                    # Switch context mode
+                    self.context_mode = "local_file_processing"
+                    print(f"\n📄 PDF downloaded: {file_name}")
+                    print(f"🔄 Context switched to: local_file_processing mode")
+                    print(f"   💡 VLLM should now use pdf_extract_text/pdf_extract_images tools to process the local file")
+                    print(f"   ⚠️  DO NOT download PDF again - use the existing file!")
+                    
+                    # Add context switch message to history with multi-step task reminder
+                    context_switch_msg = {
+                        "role": "user",
+                        "content": json.dumps({
+                            "tool_execution": "download_pdf",
+                            "result": result_str,
+                            "context_switch": {
+                                "mode": "local_file_processing",
+                                "message": f"PDF file '{file_name}' has been successfully downloaded to local artifacts directory. You should now use local file processing tools (pdf_extract_text, pdf_extract_images, ocr_image_to_text, save_image, write_text) to process this file. These tools work on local files and do NOT require web browser operations. Ignore any screenshot/DOM information when processing local files.",
+                                "available_local_files": self.downloaded_pdf_files
+                            }
+                        })
+                    }
+                    self.history.append(context_switch_msg)
+            
+            return result_str
         except TypeError as e:
             return f"❌ Invalid parameters for {tool_name}: {e}"
         except Exception as e:
             return f"❌ Tool execution failed: {e}"
     
-    def execute(
-        self,
-        instruction: str,
-        continue_session: bool = True,
-        close_browser: Optional[bool] = None
-    ) -> str:
+    def execute(self, instruction: str, is_followup: bool = False) -> str:
         """
         Execute a user instruction through multi-round interaction.
         
         Args:
             instruction: Natural language instruction from user
-            continue_session: Whether to continue from an existing session
-            close_browser: Whether to close the browser after execution. Defaults
-                to False for continued sessions and True otherwise.
         
         Returns:
             Final answer or error message
         """
-        if close_browser is None:
-            close_browser = not continue_session
-        
-        if continue_session and not self.session_active:
-            print("⚠️  No active session found. Starting a new session instead.")
-            continue_session = False
-        
         print(f"\n{'='*80}")
-        if continue_session:
-            print(f"🔁 Follow-up Task: {instruction}")
+        if is_followup:
+            print(f"🔄 Follow-up Task: {instruction}")
         else:
             print(f"🎯 Task: {instruction}")
         print(f"{'='*80}\n")
         
-        if continue_session:
+        # Reset recent tool calls for new instruction (to track repetition within this instruction)
+        self.recent_tool_calls = []
+        
+        # Initialize history with user instruction (or append if follow-up)
+        if not is_followup:
+            self.history = [{
+                "role": "user",
+                "content": instruction
+            }]
+            self.original_instruction = instruction
+        else:
             self.history.append({
                 "role": "user",
                 "content": instruction
             })
-            self._log_instruction(instruction, is_new_session=False)
-        else:
-            if self.session_active and close_browser:
-                print("ℹ️  Ending previous session and starting a new one.")
-            self._start_new_session(instruction)
+            self.original_instruction = instruction
         
         start_time = time.time()
         
-        if not continue_session:
-            # Open browser to DuckDuckGo before first round
-            # User-Agent is set in browser initialization to avoid detection
-            print("🌐 Opening browser to DuckDuckGo...")
+        # Open browser to DuckDuckGo before first round (only if not follow-up)
+        if not is_followup:
+            print("🌐 Opening browser to DuckDuckGo")
             try:
                 registry = self.get_tool_registry()
                 goto_func = registry.get_tool("goto")
@@ -193,71 +219,51 @@ class Agent:
                     print("   ⚠️  goto tool not available")
             except Exception as e:
                 print(f"   ⚠️  Failed to open browser: {e}")
-        else:
-            print("🌐 Continuing with existing browser session...")
-        
-        final_result = None
-        final_status = None
         
         try:
-            for task_round in range(self.max_rounds):
-                current_round = self.round_counter
+            # Determine starting round number (for follow-ups, continue from where we left off)
+            start_round = len(self.execution_log) if is_followup else 0
+            for i in range(start_round, self.max_rounds):
+                round_num = i
                 print(f"\n{'─'*80}")
-                print(f"🔄 Round {task_round + 1}/{self.max_rounds}")
+                print(f"🔄 Round {round_num + 1}/{self.max_rounds}")
                 print(f"{'─'*80}")
                 
                 # Execute one round
-                result = self.execute_round(current_round)
-                self.round_counter += 1
+                result = self.execute_round(round_num)
                 
                 if result["is_complete"]:
                     elapsed = time.time() - start_time
                     print(f"\n{'='*80}")
-                    print(f"✅ Task completed in {elapsed:.1f}s ({task_round + 1} rounds total)")
+                    print(f"✅ Task completed in {elapsed:.1f}s ({round_num + 1} rounds)")
                     print(f"{'='*80}")
                     print(f"\n{result['final_answer']}")
+                    # summary = self.summary_history()
+                    # self.history = [{
+                    #     'role': "assistant",
+                    #     'content': "I have completed the previous task. Here is a brief summary of what was done:\n" + summary
+                    # }]
                     
-                    final_result = result["final_answer"]
-                    final_status = "completed"
-                    break
+                    return result["final_answer"]
                 
                 # Check for errors
                 if result.get("error"):
-                    print(f"⚠️  Error in round {task_round + 1}: {result['error']}")
+                    print(f"⚠️  Error in round {round_num + 1}: {result['error']}")
                     # Continue to next round to let VLLM recover
             
             # Max rounds reached
-            if final_result is None:
-                print(f"\n{'='*80}")
-                print(f"⚠️  Max rounds ({self.max_rounds}) reached")
-                print(f"{'='*80}")
-                
-                final_result = f"Task incomplete after {self.max_rounds} rounds. Last state saved to artifacts."
-                final_status = "incomplete"
+            print(f"\n{'='*80}")
+            print(f"⚠️  Max rounds ({self.max_rounds}) reached")
+            print(f"{'='*80}")
+            
+            return f"Task incomplete after {self.max_rounds} rounds. Last state saved to artifacts."
         
         except Exception as e:
             print(f"\n❌ Fatal error: {e}")
             import traceback
             traceback.print_exc()
             
-            final_result = f"Fatal error: {str(e)}"
-            final_status = "error"
-        
-        finally:
-            # Generate and save final interpretation before cleanup
-            if final_result is not None:
-                self.generate_final_interpretation(instruction, final_result, final_status or "unknown")
-            
-            # Clean up browser
-            if close_browser:
-                registry = self.get_tool_registry()
-                close_browser_func = registry.get_tool("close_browser")
-                if close_browser_func:
-                    close_browser_func()
-                self.session_active = False
-                self.round_counter = 0
-        
-        return final_result or "Task execution ended unexpectedly."
+            return f"Fatal error: {str(e)}"
     
     def execute_round(self, round_num: int) -> Dict[str, Any]:
         """
@@ -273,8 +279,7 @@ class Agent:
         
         # 1. Get current state (screenshot + DOM)
         print("📸 Capturing current state...")
-        screenshot_filename = f"{self.session_id}_step_{round_num:03d}.png"
-        screenshot_path = str(self.artifacts_dir / screenshot_filename)
+        screenshot_path = str(self.artifacts_dir / f"step_{round_num:02d}.png")
         screenshot_available = False
         
         try:
@@ -345,14 +350,94 @@ class Agent:
             dom = f"Failed to extract DOM: {str(e)}"
             print(f"   ⚠️  DOM extraction failed: {e}")
         
-        # 2. VLLM decides next action
+        # 2. Check for blocked actions and force dom_summary if needed
+        if self.context_mode == "web_browsing" and self.blocked_actions:
+            # Check if we need to force dom_summary
+            for action_key, failure_count in self.blocked_actions.items():
+                if failure_count >= self.force_dom_summary_threshold:
+                    print(f"\n🚨 FORCING DOM SUMMARY: Action '{action_key}' has failed {failure_count} times")
+                    print(f"   🔍 Automatically calling dom_summary to find correct selector...")
+                    try:
+                        
+                        dom_analysis = semantic_dom_analyzer.analyze_page(
+                            browser_state.get_current_page(), 
+                            self.vllm.client, 
+                            user_prompt=next_step, 
+                            model=self.vllm.language_model, 
+                            max_elements=5
+                        )
+                        dom_result = dom_analysis.get("llm_text", "No DOM text available") if isinstance(dom_analysis, dict) else str(dom_analysis)
+                        # Add forced dom_summary result to history
+                        forced_dom_msg = {
+                            "role": "user",
+                            "content": f"🚨 FORCED ACTION: dom_summary was automatically called because '{action_key}' has failed {failure_count} times. Here is the DOM summary:\n{dom_result}\n\nYou MUST use the selectors from the INPUT FIELDS section above. DO NOT repeat the blocked action!"
+                        }
+                        self.history.append(forced_dom_msg)
+                        print(f"   ✅ Forced dom_summary completed and added to history")
+                        # Update dom in state_info
+                        if "dom" in locals():
+                            dom = dom_result
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to force dom_summary: {e}")
+        
+        # 3. VLLM decides next action
         print("🤔 VLLM planning next action...")
-        state_info = {
-            "screenshot": screenshot_path if screenshot_available else None,
-            "dom": dom,
-            "round": round_num,
-            "screenshot_available": screenshot_available
-        }
+        
+        # Adjust state info based on context mode
+        if self.context_mode == "local_file_processing":
+            # Build instruction based on original task to remind about multi-step tasks
+            multi_step_reminder = ""
+            if self.original_instruction:
+                original_lower = self.original_instruction.lower()
+                if "save all" in original_lower:
+                    multi_step_reminder = "\n\n**🚨 CRITICAL - MULTI-STEP TASK DETECTED:**\nYour original task requires multiple steps. You MUST complete ALL steps before marking as complete:\n1. **FIRST:** Extract ALL images with pdf_extract_images(file_name=\"report.pdf\", output_dir=\"extracted_images\") WITHOUT page_num\n2. **SECOND:** Save all extracted images using save_image for each image\n3. **THIRD:** Find and interpret the first image (if task says 'interpret the first image')\n4. **ONLY THEN:** Mark status as \"complete\" after ALL steps are done!\n\n**DO NOT skip steps!** Check your original task requirements carefully!"
+            
+            # In local file processing mode, screenshot/DOM are not relevant
+            state_info = {
+                "context_mode": "local_file_processing",
+                "screenshot": None,
+                "dom": "N/A - Currently processing local files, web browser context not relevant",
+                "round": round_num,
+                "screenshot_available": False,
+                "available_local_files": self.downloaded_pdf_files,
+                "extracted_images": self.extracted_images,  # Add extracted images for VLLM visualization
+                "instruction": f"You are currently in LOCAL FILE PROCESSING mode. Use pdf_extract_text, pdf_extract_images, save_image, write_text, and ocr_image_to_text tools to process the downloaded PDF files. These tools work on local files in the artifacts/ directory. Do NOT use web browser tools (click, type_text, etc.) in this mode. DO NOT download PDF again - it's already downloaded!{multi_step_reminder}"
+            }
+            print(f"   📁 Context: Local file processing mode (available files: {self.downloaded_pdf_files})")
+            if self.extracted_images:
+                print(f"   🖼️  Extracted images available for visualization: {len(self.extracted_images)} images")
+        else:
+            # Normal web browsing mode
+            # Check if current page is a PDF
+            is_pdf_page = False
+            pdf_url = None
+            try:
+                registry = self.get_tool_registry()
+                # Get current URL from browser state
+                from .tools.browser_control import browser_state
+                if browser_state.is_initialized:
+                    current_url = browser_state.get_current_page().url
+                    # Check if URL indicates PDF
+                    if current_url.lower().endswith('.pdf') or '/pdf' in current_url.lower() or 'application/pdf' in current_url.lower():
+                        is_pdf_page = True
+                        pdf_url = current_url
+            except Exception:
+                pass
+            
+            state_info = {
+                "context_mode": "web_browsing",
+                "screenshot": screenshot_path if screenshot_available else None,
+                "dom": dom,
+                "round": round_num,
+                "screenshot_available": screenshot_available,
+                "instruction": "Analyze the current state and decide the next action. Respond with valid JSON."
+            }
+            
+            # Add PDF detection warning if PDF page detected
+            if is_pdf_page:
+                state_info["pdf_detected"] = True
+                state_info["pdf_url"] = pdf_url
+                state_info["instruction"] = f"🚨 CRITICAL: PDF PAGE DETECTED! The current page is a PDF file (URL: {pdf_url}). You MUST download it using download_pdf(url=\"{pdf_url}\", file_name=\"report.pdf\") before processing. DO NOT try to scroll or interact with the PDF in the browser - download it first!"
         
         try:
             response = self.vllm.plan_next_action(
@@ -440,6 +525,114 @@ class Agent:
             tool_name = tool_call["name"]
             parameters = tool_call.get("params", {})
             
+            # Check for repeated tool calls (same tool with same parameters)
+            current_call_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
+            recent_same_calls = [call for call in self.recent_tool_calls if call.get("key") == current_call_key]
+            repeat_count = len(recent_same_calls) + 1  # +1 for current call
+            
+            # Check if this is a file processing tool and if it's been called 3 times
+            # If so, auto-complete the instruction to prevent infinite loop
+            if tool_name in self.file_processing_tools and repeat_count >= self.file_processing_repeat_threshold:
+                print(f"\n🚨 REPEATED FILE PROCESSING TOOL CALL DETECTED: {tool_name} called {repeat_count} times")
+                print(f"   🎯 Auto-completing instruction to prevent infinite loop...")
+                
+                # Add assistant's tool call to history for logging
+                assistant_tool_call = {
+                    "thought": response.get("thought", ""),
+                    "tool": tool_name,
+                    "parameters": parameters
+                }
+                self.history.append({
+                    "role": "assistant",
+                    "content": json.dumps(assistant_tool_call, ensure_ascii=False, indent=2)
+                })
+                
+                # Add auto-completion message to history
+                auto_complete_msg = {
+                    "role": "user",
+                    "content": json.dumps({
+                        "tool_execution": "auto_complete",
+                        "result": f"⚠️ Instruction auto-completed: The file processing tool '{tool_name}' has been called {repeat_count} times with the same parameters. This indicates the task may be stuck in a loop. Current instruction has been ended."
+                    }, ensure_ascii=False, indent=2)
+                }
+                self.history.append(auto_complete_msg)
+                
+                # Log execution
+                self.execution_log.append({
+                    "round": round_num,
+                    "action": "auto_complete",
+                    "reason": f"File processing tool '{tool_name}' repeated {repeat_count} times",
+                    "tool": tool_name,
+                    "parameters": parameters,
+                    "elapsed_time": time.time() - round_start_time
+                })
+                self.save_execution_log()
+                
+                completion_msg = (
+                    f"⚠️ Instruction auto-completed: The file processing tool '{tool_name}' has been called "
+                    f"{repeat_count} times with the same parameters. This indicates the task may be stuck in a loop. "
+                    f"Current instruction has been ended. Please provide the next instruction."
+                )
+                
+                return {
+                    "is_complete": True,
+                    "final_answer": completion_msg
+                }
+            
+            if len(recent_same_calls) >= 2:  # If same call appears 2+ times in recent history
+                print(f"\n⚠️  DETECTED REPEATED TOOL CALL: {tool_name} with same parameters called {repeat_count} times")
+                print(f"   This might indicate the VLLM is stuck. Adding intervention message...")
+                
+                # Add intervention message
+                intervention_msg = {
+                    "role": "user",
+                    "content": f"⚠️ INTERVENTION: You have called '{tool_name}' with the same parameters {repeat_count} times. The result was already provided. You MUST proceed to the next step:\n"
+                }
+                
+                # Provide specific guidance based on tool
+                if tool_name == "pdf_extract_text":
+                    intervention_msg["content"] += "- If you extracted text to find Figure 1, check the FIGURE LOCATIONS SUMMARY and proceed to extract images.\n"
+                    intervention_msg["content"] += "- DO NOT extract text again - you already have the information you need!\n"
+                elif tool_name == "pdf_extract_images":
+                    intervention_msg["content"] += "- Images have been extracted. You MUST now save them using save_image or proceed to interpret them.\n"
+                    intervention_msg["content"] += "- DO NOT extract images again!\n"
+                
+                self.history.append(intervention_msg)
+                print(f"   ✅ Added intervention message to guide next action")
+            
+            # Track this tool call
+            self.recent_tool_calls.append({
+                "key": current_call_key,
+                "tool": tool_name,
+                "parameters": parameters,
+                "round": round_num
+            })
+            # Keep only recent calls
+            if len(self.recent_tool_calls) > self.max_recent_calls:
+                self.recent_tool_calls.pop(0)
+            
+            # Check if this action is blocked
+            original_tool_name = tool_name
+            original_parameters = parameters.copy()
+            if self.context_mode == "web_browsing" and tool_name in ["click", "type_text", "press_key"]:
+                action_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
+                if action_key in self.blocked_actions:
+                    failure_count = self.blocked_actions[action_key]
+                    if failure_count >= self.force_dom_summary_threshold:
+                        print(f"\n🚨 BLOCKED ACTION: '{action_key}' has failed {failure_count} times")
+                        print(f"   🔍 Automatically replacing with dom_summary call...")
+                        
+                        # Replace blocked action with dom_summary
+                        tool_name = "dom_summary"
+                        parameters = {"max_elements": 15}
+                        
+                        # Add blocking message to history BEFORE assistant's tool call
+                        blocking_msg = {
+                            "role": "user",
+                            "content": f"🚨 ACTION BLOCKED: Your requested action '{original_tool_name}' with parameters {json.dumps(original_parameters)} has been blocked because it has failed {failure_count} times. The system has automatically replaced it with a dom_summary call. You MUST use the selectors from the DOM summary result. DO NOT attempt the blocked action again!"
+                        }
+                        self.history.append(blocking_msg)
+            
             print(f"🔧 Executing: {tool_name}({json.dumps(parameters, indent=2)})")
             
             # First, add assistant's tool call decision to history
@@ -462,15 +655,111 @@ class Agent:
                 result = f"❌ Tool execution error: {e}"
                 print(f"   {result}")
             
+            # Track failed actions to detect loops
+            is_failure = "❌" in str(result) or "Failed" in str(result) or "error" in str(result).lower()
+            # Also track ineffective clicks (URL unchanged for submit buttons)
+            is_ineffective_click = (
+                tool_name == "click" and 
+                "Page URL unchanged" in str(result) and 
+                ("INEFFECTIVE CLICK" in str(result) or "search" in str(parameters.get("text", "")).lower() or "submit" in str(parameters.get("text", "")).lower())
+            )
+            repeated_failure_detected = False
+            same_failures_count = 0
+            
+            if is_failure or is_ineffective_click:
+                failure_key = f"{tool_name}:{json.dumps(parameters, sort_keys=True)}"
+                self.recent_failures.append({
+                    "key": failure_key,
+                    "tool": tool_name,
+                    "parameters": parameters,
+                    "result": result,
+                    "round": round_num,
+                    "is_ineffective": is_ineffective_click
+                })
+                
+                # If it's an ineffective click, add a suggestion to use press_key("Enter")
+                if is_ineffective_click:
+                    print(f"\n⚠️  INEFFECTIVE CLICK DETECTED: Click on '{parameters.get('text', 'button')}' did not change URL")
+                    print(f"   💡 Suggestion: Use press_key(\"Enter\") in the input field instead of clicking the button")
+                # Keep only recent failures
+                if len(self.recent_failures) > self.max_failure_history:
+                    self.recent_failures = self.recent_failures[-self.max_failure_history:]
+                
+                # Check for repeated failures
+                same_failures = [f for f in self.recent_failures if f["key"] == failure_key]
+                same_failures_count = len(same_failures)
+                
+                # Update blocked actions
+                if self.context_mode == "web_browsing" and tool_name in ["click", "type_text", "press_key"]:
+                    self.blocked_actions[failure_key] = same_failures_count
+                
+                if same_failures_count >= self.repeated_failure_threshold:
+                    repeated_failure_detected = True
+                    print(f"\n⚠️  DETECTED REPEATED FAILURE: {tool_name} failed {same_failures_count} times with same parameters")
+                    
+                    # Force DOM summary if in web browsing mode and it's a browser interaction tool
+                    if self.context_mode == "web_browsing" and tool_name in ["click", "type_text", "press_key"]:
+                        if same_failures_count >= self.force_dom_summary_threshold:
+                            print(f"   🚨 CRITICAL: Action will be BLOCKED and replaced with dom_summary on next attempt")
+                        else:
+                            print(f"   🔍 Forcing DOM summary check to find correct selector...")
+                            # Add a special message to history to force VLLM to check DOM
+                            intervention_msg = {
+                                "role": "user",
+                                "content": f"⚠️ INTERVENTION: The action '{tool_name}' with parameters {json.dumps(parameters)} has failed {same_failures_count} times. You MUST call 'dom_summary' tool to find the correct selector before trying again. DO NOT repeat the same failed action! If this action fails {self.force_dom_summary_threshold} times, it will be automatically blocked."
+                            }
+                            self.history.append(intervention_msg)
+                            print(f"   ✅ Added intervention message to force DOM summary check")
+            
+            # Track extracted images for VLLM visualization
+            if tool_name == "pdf_extract_images" and "✅" in str(result):
+                # Parse extracted image paths from result
+                # Result format: "✅ Extracted N images to dir:\n  - path1\n  - path2..."
+                lines = str(result).split('\n')
+                new_images = []
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('- '):
+                        img_path = line[2:].strip()  # Remove "- " prefix
+                        # Clean up path (remove any extra whitespace or quotes)
+                        img_path = img_path.strip('"\'')
+                        if img_path and img_path not in self.extracted_images:
+                            self.extracted_images.append(img_path)
+                            new_images.append(img_path)
+                if new_images:
+                    print(f"   📸 Tracked {len(new_images)} new extracted images for VLLM visualization")
+                    print(f"      Total tracked images: {len(self.extracted_images)}")
+            
             # Add tool execution result as user message to history
+            # If there was a repeated failure, make it more prominent
             tool_result = {
                 "tool_execution": tool_name,
                 "result": result
             }
-            self.history.append({
-                "role": "user",
-                "content": json.dumps(tool_result, ensure_ascii=False, indent=2)
-            })
+            if repeated_failure_detected:
+                tool_result["⚠️ CRITICAL"] = f"This action has failed {same_failures_count} times. You MUST call 'dom_summary' tool NOW to find the correct selector. DO NOT repeat this action!"
+            
+            # Add context switch notification for PDF downloads
+            if tool_name == "download_pdf" and "✅" in str(result):
+                file_name = parameters.get("file_name")
+                context_notification = {
+                    "tool_execution": tool_name,
+                    "result": result,
+                    "context_switch": {
+                        "mode": "local_file_processing",
+                        "message": f"PDF file '{file_name}' has been successfully downloaded to local artifacts directory. You should now use local file processing tools (pdf_extract_text, pdf_extract_images, ocr_image_to_text) to process this file. These tools work on local files and do NOT require web browser operations. Ignore any screenshot/DOM information when processing local files.\n\n**IMPORTANT - For tasks requiring specific figures (e.g., 'interpret Figure 1'):**\n1. FIRST extract text from PDF (pdf_extract_text without page_num) to search for 'Figure 1' in the text and find which page it's on\n2. THEN extract images ONLY from that specific page (use page_num parameter)\n3. DO NOT extract images from page 1 or all pages before finding where Figure 1 is located!",
+                        "available_local_files": [file_name]
+                    }
+                }
+                self.history.append({
+                    "role": "user",
+                    "content": json.dumps(context_notification, ensure_ascii=False, indent=2)
+                })
+            else:
+                self.history.append({
+                    "role": "user",
+                    "content": json.dumps(tool_result, ensure_ascii=False, indent=2)
+                })
             
             # Log execution with VLLM raw data
             self.execution_log.append({
@@ -488,6 +777,36 @@ class Agent:
         
         return {"is_complete": False}
     
+    def summary_history(self):
+        """Generate a summary of the conversation history if one task is finished"""
+        summary = ""
+        for msg in self.history:
+            role = msg.get("role", "unknown").capitalize()
+            content = msg.get("content", "")
+            summary += f"{role}:\n{content}\n\n"
+        # use llm to summarize
+        self.history.append({
+            "role": "user",
+            "content": f"Please provide a concise summary of the following conversation history:\n\n{summary}\n\nSummary:"
+        })
+        try:
+            summary = self.vllm.plan_next_action(
+                self.history,
+                {"instruction": "Summarize the conversation history concisely."},
+                []
+            )
+            if summary['is_complete'] is False:
+                # keep summarizing until complete
+                summary = self.vllm.plan_next_action(
+                    self.history,
+                    {"instruction": "Summarize the conversation history concisely."},
+                    []
+                )
+            final_answer = summary.get("final_answer", "")
+        except Exception as e:
+            print(f"   ⚠️  Failed to summarize history: {e}")
+        return final_answer
+    
     def save_execution_log(self):
         """Save execution log to JSON file"""
         log_path = self.artifacts_dir / f"execution_log_{self.session_id}.json"
@@ -497,7 +816,7 @@ class Agent:
             "timestamp": datetime.now().isoformat(),
             "history": self.history,
             "execution_log": self.execution_log,
-            "total_rounds": self.round_counter
+            "total_rounds": len(self.execution_log)
         }
         
         with open(log_path, "w", encoding="utf-8") as f:
@@ -505,127 +824,33 @@ class Agent:
         
         print(f"📝 Execution log updated: {log_path}")
     
-    def generate_final_interpretation(self, instruction: str, final_result: str, status: str) -> str:
+    def close_session(self):
         """
-        Generate final interpretation using LLM and save to file.
-        
-        Args:
-            instruction: Original user instruction
-            final_result: Final result message
-            status: Status of task completion ("completed", "failed", "incomplete", "error")
-        
-        Returns:
-            Path to saved interpretation file
+        Close the session, generate final interpretation, and clean up resources.
+        This should be called at the end of a session.
         """
+        print("\n" + "="*80)
+        print("🔚 Closing session...")
+        print("="*80)
+        
         try:
-            print("\n📝 Generating final interpretation...")
-            
-            # Prepare tool execution history for prompt context
-            tool_history_entries = [
-                {
-                    "round": entry.get("round"),
-                    "tool": entry.get("tool"),
-                    "parameters": entry.get("parameters"),
-                    "result": entry.get("result")
-                }
-                for entry in self.execution_log
-                if entry.get("tool")
-            ]
-            
-            max_history_entries = 25
-            total_tool_entries = len(tool_history_entries)
-            if total_tool_entries > max_history_entries:
-                tool_history_note = f"(showing latest {max_history_entries} of {total_tool_entries} tool executions)"
-                tool_history_entries = tool_history_entries[-max_history_entries:]
-            else:
-                tool_history_note = "(showing all tool executions)"
-            
-            tool_history_json = json.dumps(tool_history_entries, ensure_ascii=False, indent=2) if tool_history_entries else "[]"
-            
-            # Build prompt for final interpretation
-            interpretation_prompt = f"""You are analyzing the execution of a web automation task. Please provide a comprehensive final interpretation of what happened.
-
-**Original Task:**
-{instruction}
-
-**Final Status:**
-{status}
-
-**Final Result:**
-{final_result}
-
-**Execution Summary:**
-- Total rounds executed: {len(self.execution_log)}
-- Session ID: {self.session_id}
-
-**Tool Execution History {tool_history_note}:**
-```json
-{tool_history_json}
-```
-
-Please provide a detailed interpretation that includes:
-1. What the task was trying to accomplish
-2. What actions were taken during execution
-3. Whether the task was completed successfully or not, and why
-4. Key findings or results
-5. Any issues or limitations encountered
-6. Overall assessment of the execution
-
-Write in a clear, structured format suitable for documentation."""
-
-            # Call VLLM to generate interpretation
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant that provides clear, structured interpretations of task execution results."},
-                {"role": "user", "content": interpretation_prompt}
-            ]
-            
-            try:
-                response = self.vllm.client.chat.completions.create(
-                    model=self.vllm.model,
-                    messages=messages,
-                    max_tokens=self.vllm.max_tokens,
-                    temperature=0.7
-                )
-                
-                interpretation = response.choices[0].message.content
-                
-                # Save to file using write_text_to_file tool
-                file_name = f"final_interpretation_{self.session_id}.txt"
-                result = self.execute_tool("write_text", {
-                    "content": interpretation,
-                    "file_name": file_name
-                })
-                
-                print(f"   {result}")
-                return file_name
-                
-            except Exception as e:
-                print(f"   ⚠️  Failed to generate interpretation: {e}")
-                # Fallback: save a simple interpretation
-                fallback_content = f"""Final Interpretation
-{'='*80}
-
-Task: {instruction}
-Status: {status}
-Result: {final_result}
-
-Execution Summary:
-- Total rounds: {len(self.execution_log)}
-- Session ID: {self.session_id}
-
-Note: Automatic interpretation generation failed. This is a fallback summary.
-"""
-                file_name = f"final_interpretation_{self.session_id}.txt"
-                result = self.execute_tool("write_text", {
-                    "content": fallback_content,
-                    "file_name": file_name
-                })
-                print(f"   ✅ Saved fallback interpretation: {result}")
-                return file_name
-                
+            # Generate final interpretation
+            from .tools.file_operations import generate_final_interpretation
+            result = generate_final_interpretation()
+            print(f"   {result}")
         except Exception as e:
-            print(f"   ⚠️  Error generating final interpretation: {e}")
-            return ""
+            print(f"   ⚠️  Failed to generate final interpretation: {e}")
+        
+        # Clean up browser
+        try:
+            registry = self.get_tool_registry()
+            close_browser_func = registry.get_tool("close_browser")
+            if close_browser_func:
+                close_browser_func()
+        except Exception as e:
+            print(f"   ⚠️  Error closing browser: {e}")
+        
+        print("   ✅ Session closed")
 
 
 if __name__ == "__main__":
